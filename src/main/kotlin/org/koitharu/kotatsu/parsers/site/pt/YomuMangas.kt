@@ -4,10 +4,13 @@ import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
+import org.koitharu.kotatsu.parsers.exception.ParseException
 import org.koitharu.kotatsu.parsers.model.ContentRating
 import org.koitharu.kotatsu.parsers.model.ContentType
 import org.koitharu.kotatsu.parsers.model.Manga
@@ -151,16 +154,125 @@ internal class YomuMangas(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
-		return doc.select("[class*=reader_Pages] img").mapNotNull { img ->
-			val url = img.src()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+		val chapterUrl = chapter.url.toAbsoluteUrl(domain)
+
+		val httpDoc = webClient.httpGet(chapterUrl, getRequestHeaders()).parseHtml()
+		val httpPages = parsePagesFromDocument(httpDoc)
+		if (httpPages.isNotEmpty()) {
+			return httpPages
+		}
+
+		if (isCloudflareChallenge(httpDoc)) {
+			context.requestBrowserAction(this, chapterUrl)
+		}
+
+		val jsHtml = loadChapterHtmlViaJs(chapterUrl)
+		if (jsHtml != null) {
+			if (isCloudflareChallenge(jsHtml)) {
+				context.requestBrowserAction(this, chapterUrl)
+			}
+
+			val jsDoc = Jsoup.parse(jsHtml, chapterUrl)
+			val jsPages = parsePagesFromDocument(jsDoc)
+			if (jsPages.isNotEmpty()) {
+				return jsPages
+			}
+		}
+
+		throw ParseException("Cannot find chapter pages", chapterUrl)
+	}
+
+	private fun parsePagesFromDocument(doc: Document): List<MangaPage> {
+		val images = doc.select(
+			"ul[class*=styles_Pages] li[data-type=page] img[src], " +
+				"li[id^=page-] img[src], " +
+				"[class*=reader_Pages] img[src]",
+		)
+		return images.mapNotNull { img ->
+			val pageUrl = img.src()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
 			MangaPage(
-				id = generateUid(url),
-				url = url.toRelativeUrl(domain),
+				id = generateUid(pageUrl),
+				url = pageUrl.toRelativeUrl(domain),
 				preview = null,
 				source = source,
 			)
 		}
+	}
+
+	private suspend fun loadChapterHtmlViaJs(chapterUrl: String): String? {
+		val script = """
+			(() => {
+				return new Promise(resolve => {
+					const challengeDetected = () => {
+						const hasChallengeScript = document.querySelector('script[src*="challenge-platform"]') !== null;
+						const hasChallengeTitle = document.getElementById('challenge-error-title') !== null;
+						const hasChallengeText = document.getElementById('challenge-error-text') !== null;
+						const hasChallengeForm = document.querySelector('form[action*="__cf_chl"]') !== null;
+						const root = document.documentElement;
+						const lower = ((root && root.innerText) || '').toLowerCase();
+						const hasChallengeTextSignal =
+							(lower.includes('just a moment') && lower.includes('cloudflare')) ||
+							(lower.includes('checking your browser') && lower.includes('cloudflare')) ||
+							lower.includes('cf-chl-opt');
+						return hasChallengeScript || hasChallengeTitle || hasChallengeText || hasChallengeForm || hasChallengeTextSignal;
+					};
+
+					const hasPages = () =>
+						document.querySelector('ul[class*=styles_Pages] li[data-type="page"] img[src], li[id^="page-"] img[src], [class*=reader_Pages] img[src]') !== null;
+
+					const finish = () => resolve(document.documentElement ? document.documentElement.outerHTML : "");
+
+					if (challengeDetected() || hasPages()) {
+						return finish();
+					}
+
+					let attempts = 0;
+					const maxAttempts = 80;
+					const timer = setInterval(() => {
+						attempts += 1;
+						if (challengeDetected() || hasPages() || attempts >= maxAttempts) {
+							clearInterval(timer);
+							finish();
+						}
+					}, 250);
+				});
+			})()
+		""".trimIndent()
+
+		val raw = context.evaluateJs(chapterUrl, script, timeout = 30000L) ?: return null
+		return decodeEvaluateJsHtml(raw)
+	}
+
+	private fun decodeEvaluateJsHtml(raw: String): String {
+		val value = raw.trim()
+		if (value.length >= 2 && value.first() == '"' && value.last() == '"') {
+			val unescaped = value.substring(1, value.length - 1)
+				.replace("\\\\", "\\")
+				.replace("\\\"", "\"")
+				.replace("\\n", "\n")
+				.replace("\\r", "\r")
+				.replace("\\t", "\t")
+			return unescaped.replace(Regex("""\\u([0-9a-fA-F]{4})""")) { m ->
+				m.groupValues[1].toInt(16).toChar().toString()
+			}
+		}
+		return value
+	}
+
+	private fun isCloudflareChallenge(doc: Document): Boolean {
+		if (doc.selectFirst("script[src*=challenge-platform]") != null) return true
+		if (doc.getElementById("challenge-error-title") != null) return true
+		if (doc.getElementById("challenge-error-text") != null) return true
+		if (doc.selectFirst("form[action*=__cf_chl]") != null) return true
+		return isCloudflareChallenge(doc.outerHtml())
+	}
+
+	private fun isCloudflareChallenge(html: String): Boolean {
+		val lower = html.lowercase(Locale.ROOT)
+		return (lower.contains("just a moment") && lower.contains("cloudflare")) ||
+			(lower.contains("checking your browser") && lower.contains("cloudflare")) ||
+			lower.contains("cf-chl-opt") ||
+			lower.contains("cf-browser-verification")
 	}
 
 	private suspend fun fetchChapters(series: JSONObject): List<MangaChapter> {
