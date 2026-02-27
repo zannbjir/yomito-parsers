@@ -23,13 +23,11 @@ internal class Manhwaku(context: MangaLoaderContext) :
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(SortOrder.NEWEST)
 
-    override suspend fun getFilterOptions(): MangaListFilterOptions {
-        return MangaListFilterOptions(
-            availableTags = fetchTags(),
-            availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
-            availableContentTypes = EnumSet.of(ContentType.MANHWA, ContentType.MANHUA)
-        )
-    }
+    override suspend fun getFilterOptions() = MangaListFilterOptions(
+        availableTags = fetchTags(),
+        availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
+        availableContentTypes = EnumSet.of(ContentType.MANHWA, ContentType.MANHUA)
+    )
 
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
@@ -41,8 +39,7 @@ internal class Manhwaku(context: MangaLoaderContext) :
         val url = buildString {
             append("https://")
             append(domain)
-            append("/api/series")
-            append("?page=")
+            append("/api/series?page=")
             append(page)
             if (!filter.query.isNullOrEmpty()) {
                 append("&search=")
@@ -67,7 +64,7 @@ internal class Manhwaku(context: MangaLoaderContext) :
                 publicUrl = "https://$domain/detail/$slug",
                 rating = RATING_UNKNOWN,
                 contentRating = null,
-                coverUrl = jo.optString("cover_url"),
+                coverUrl = jo.optString("cover_url").takeIf { it.isNotEmpty() },
                 tags = emptySet(),
                 state = null,
                 authors = emptySet(),
@@ -78,14 +75,13 @@ internal class Manhwaku(context: MangaLoaderContext) :
 
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl).parseHtml()
-        
         val chapters = doc.select("a[href*='/read/']").mapIndexed { i, el ->
-            val chUrl = el.attr("href").removePrefix("https://$domain").removePrefix("/")
+            val href = el.attr("href").removePrefix("https://$domain").removePrefix("/")
             MangaChapter(
-                id = generateUid(chUrl),
-                title = el.text(),
-                url = chUrl,
-                number = el.text().filter { it.isDigit() || it == '.' }.toFloatOrNull() ?: (i + 1f),
+                id = generateUid(href),
+                title = el.text().trim(),
+                url = href,
+                number = el.text().replace(Regex("[^0-9.]"), "").toFloatOrNull() ?: (i + 1f),
                 volume = 0,
                 scanlator = null,
                 uploadDate = 0L,
@@ -95,38 +91,23 @@ internal class Manhwaku(context: MangaLoaderContext) :
         }.reversed()
 
         return manga.copy(
-            description = doc.select(".text-gray-400, p, #desk-content").firstOrNull()?.text(),
+            description = doc.selectFirst(".text-gray-400, p, #desk-content")?.text()?.trim(),
             chapters = chapters
         )
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val doc = webClient.httpGet("https://$domain/${chapter.url}").parseHtml()
-        
-        return doc.select(".container img, .reader-area img, img[class*='w-full']").map { img ->
-            val imageUrl = img.src() ?: img.attr("data-src")
-            MangaPage(
-                id = generateUid(imageUrl),
-                url = imageUrl,
-                preview = null,
-                source = source
-            )
-        }.filter { it.url.isNotBlank() && !it.url.contains("logo") }
+        val fullUrl = if (chapter.url.startsWith("http")) chapter.url else "https://$domain/${chapter.url.removePrefix("/")}"
+        val doc = webClient.httpGet(fullUrl).parseHtml()
+        return doc.select(".container img, .reader-area img, img[class*='w-full']").mapNotNull { img ->
+            val imageUrl = img.src() ?: img.attr("data-src") ?: return@mapNotNull null
+            if (imageUrl.contains(Regex("logo|ad|banner", RegexOption.IGNORE_CASE))) return@mapNotNull null
+            MangaPage(id = generateUid(imageUrl), url = imageUrl, preview = null, source = source)
+        }
     }
 
-    private fun fetchTags(): Set<MangaTag> {
-        return setOf(
-            "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", 
-            "Martial Arts", "Mystery", "Romance", "Sci-Fi", "Slice of Life", 
-            "Sports", "Supernatural", "Thriller", "Tragedy", "Historical", 
-            "Psychological", "School Life", "Seinen", "Shoujo", "Shounen", 
-            "Josei", "Harem", "Isekai", "Ecchi", "Gore", "Mature", "Adult"
-        ).map { title ->
-            MangaTag(
-                key = title.lowercase().replace(" ", "-"), 
-                title = title, 
-                source = source
-            )
-        }.toSet()
-    }
+    private fun fetchTags(): Set<MangaTag> = setOf(
+        "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Martial Arts", "Romance", 
+        "Historical", "School Life", "Isekai", "Adult", "Psychological", "Seinen", "Shoujo", "Shounen"
+    ).map { MangaTag(it.lowercase().replace(" ", "-"), it, source) }.toSet()
 }
