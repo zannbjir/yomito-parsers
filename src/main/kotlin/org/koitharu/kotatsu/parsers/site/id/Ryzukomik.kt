@@ -79,8 +79,12 @@ internal class Ryzukomik(context: MangaLoaderContext) :
         }
 
         val json = webClient.httpGet(url).parseJson()
-        val data = json.getJSONArray("data")
-
+        val data = json.optJSONArray("data") 
+        
+        if (data == null || data.length() == 0) {
+            return emptyList() 
+        }
+        
         return data.mapJSON { jo ->
             val slug = jo.getString("slug")
             Manga(
@@ -120,8 +124,6 @@ internal class Ryzukomik(context: MangaLoaderContext) :
         val chapters = doc.select("div.chapter-list a, a[href*='/chapter/']").mapIndexed { i, el ->
             val chapterUrl = el.attr("href").removePrefix("/")
             val title = el.select("span.visited-chapter").text().ifBlank { el.text() }
-            
-            // Mengambil upload date dari data-time unix timestamp
             val unixTime = el.selectFirst(".time-ago")?.attr("data-time")?.toLongOrNull() ?: 0L
             MangaChapter(
                 id = generateUid(chapterUrl),
