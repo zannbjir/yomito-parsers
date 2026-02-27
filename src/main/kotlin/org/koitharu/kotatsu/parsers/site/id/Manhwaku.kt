@@ -50,10 +50,11 @@ internal class Manhwaku(context: MangaLoaderContext) :
             }
         }
 
-        val json = webClient.httpGet(url) {
-            addHeader("X-Requested-With", "XMLHttpRequest")
-        }.parseJson()
-        
+        val extraHeaders = Headers.Builder()
+            .add("X-Requested-With", "XMLHttpRequest")
+            .build()
+
+        val json = webClient.httpGet(url, extraHeaders).parseJson()
         val data = json.optJSONArray("data") ?: return emptyList()
 
         return data.mapJSON { jo ->
