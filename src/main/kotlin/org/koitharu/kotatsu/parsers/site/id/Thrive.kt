@@ -43,7 +43,6 @@ internal class Thrive(context: MangaLoaderContext) :
         val doc = webClient.httpGet(url).parseHtml()
         val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return emptyList()
         val props = JSONObject(scriptData).getJSONObject("props").getJSONObject("pageProps")
-       
         val dataArray = props.optJSONArray("terbaru") 
             ?: props.optJSONArray("thrive") 
             ?: props.optJSONArray("results") 
@@ -71,11 +70,10 @@ internal class Thrive(context: MangaLoaderContext) :
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl).parseHtml()
         val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return manga
-        val props = JSONObject(scriptData).getJSONObject("props").getJSONObject("pageProps")
-        
-        val titleObj = props.optJSONObject("title") ?: return manga
+        val pageProps = JSONObject(scriptData).getJSONObject("props").getJSONObject("pageProps")
+        val titleData = pageProps.optJSONObject("title") ?: return manga
 
-        val chapters = titleObj.optJSONArray("chapters")?.mapJSON { ch ->
+        val chapters = titleData.optJSONArray("chapters")?.mapJSON { ch ->
             val chId = ch.getString("id")
             MangaChapter(
                 id = generateUid(chId),
@@ -87,7 +85,7 @@ internal class Thrive(context: MangaLoaderContext) :
         } ?: emptyList()
 
         return manga.copy(
-            description = titleObj.optString("description"),
+            description = titleData.optString("description"),
             chapters = chapters.reversed()
         )
     }
@@ -103,12 +101,18 @@ internal class Thrive(context: MangaLoaderContext) :
         }
     }
 
-    private fun fetchTags(): Set<MangaTag> = setOf(
-        "Action", "Adventure", "Boys' Love", "Comedy", "Crime", "Drama", "Fantasy", "Girls' Love", "Historical", "Horror", "Isekai"
-    ).map { MangaTag(it.lowercase().replace(" ", "-"), it, source) }.toSet()
-}
-        "Girls' Love", "Historical", "Horror", "Isekai", "Mecha", "Medical", 
-        "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", 
-        "Superhero", "Thriller", "Tragedy"
-    ).map { MangaTag(it.lowercase().replace(" ", "-"), it, source) }.toSet()
+    private fun fetchTags(): Set<MangaTag> {
+        return setOf(
+            "Action", "Adventure", "Boys' Love", "Comedy", "Crime", "Drama", 
+            "Fantasy", "Girls' Love", "Historical", "Horror", "Isekai", "Mecha", 
+            "Medical", "Mystery", "Psychological", "Romance", "Sci-Fi", 
+            "Slice of Life", "Sports", "Superhero", "Thriller", "Tragedy"
+        ).map { title ->
+            MangaTag(
+                key = title.lowercase().replace(" ", "-").replace("'", ""), 
+                title = title, 
+                source = source
+            )
+        }.toSet()
+    }
 }
