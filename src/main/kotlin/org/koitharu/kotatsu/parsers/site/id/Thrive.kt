@@ -77,32 +77,29 @@ internal class Thrive(context: MangaLoaderContext) :
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
-        val id = manga.url.substringAfterLast("/")
-        val apiUrl = "https://$domain/api/titles/$id"
-        val json = webClient.httpGet(apiUrl).parseJson()
-        val jo = json.getJSONObject("data")
-
-        val chapters = jo.optJSONArray("chapters")?.mapJSON { ch ->
-            val chId = ch.getString("id")
-            val title = ch.optString("title", "Chapter ${ch.optString("number")}")
-            MangaChapter(
-                id = generateUid(chId),
-                title = title,
-                url = "/read/$chId",
-                number = ch.optString("number").toFloatOrNull() ?: 0f,
-                volume = 0,
-                scanlator = null,
-                uploadDate = 0L,
-                branch = null,
-                source = source
-            )
-        } ?: emptyList()
-
-        return manga.copy(
-            description = jo.optString("description"),
-            chapters = chapters.reversed()
+    val id = manga.url.substringAfterLast("/")
+    val doc = webClient.httpGet("https://$domain/title/$id").parseHtml()
+    val description = doc.select("p.text-sm").first()?.text()
+    val chapters = doc.select("a[href*='/read/']").mapIndexed { i, el ->
+        val chId = el.attr("href").substringAfterLast("/")
+        MangaChapter(
+            id = generateUid(chId),
+            title = el.text(),
+            url = "/read/$chId",
+            number = el.text().filter { it.isDigit() || it == '.' }.toFloatOrNull() ?: (i + 1f),
+            volume = 0,
+            scanlator = null,
+            uploadDate = 0L,
+            branch = null,
+            source = source
         )
-    }
+    }.reversed()
+
+    return manga.copy(
+        description = description,
+        chapters = chapters
+    )
+}
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val id = chapter.url.substringAfterLast("/")
