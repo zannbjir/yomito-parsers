@@ -66,6 +66,7 @@ internal class Softkomik(context: MangaLoaderContext) :
             val link = el.selectFirst("a") ?: return@mapNotNull null
             val mangaUrl = link.attr("href").removePrefix("https://$domain").removePrefix("http://$domain")
             if (mangaUrl.contains("/chapter/")) return@mapNotNull null
+
             val coverUrl = el.selectFirst("img")?.src() ?: ""
 
             Manga(
@@ -104,7 +105,7 @@ internal class Softkomik(context: MangaLoaderContext) :
                 branch = null,
                 source = source
             )
-        }.reversed()
+        }.filterNotNull().reversed()
 
         return manga.copy(
             description = doc.select(".entry-content p, .desc, .synopsis").text().trim(),
