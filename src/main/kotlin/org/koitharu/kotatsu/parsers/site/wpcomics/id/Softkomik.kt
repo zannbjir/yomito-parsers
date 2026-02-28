@@ -84,7 +84,6 @@ internal class Softkomik(context: MangaLoaderContext) :
 
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl).parseHtml()
-        
         val chapters = doc.select("#chapterlist li, .clist li").mapIndexed { i, el ->
             val a = el.selectFirst("a") ?: return@mapIndexed null
             val href = a.attrAsRelativeUrl("href")
@@ -99,7 +98,7 @@ internal class Softkomik(context: MangaLoaderContext) :
                 branch = null,
                 source = source
             )
-        }.reversed()
+        }.filterNotNull().reversed()
 
         return manga.copy(
             description = doc.select(".entry-content p, .synopsis").text().trim(),
