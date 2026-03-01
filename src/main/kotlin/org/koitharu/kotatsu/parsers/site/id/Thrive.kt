@@ -5,84 +5,89 @@ import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
-import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
 import org.koitharu.kotatsu.parsers.util.json.*
+import java.text.SimpleDateFormat
 import java.util.*
 
 @MangaSourceParser("THRIVE", "Thrive", "id")
-internal class Thrive(context: MangaLoaderContext) :
-    PagedMangaParser(context, MangaParserSource.THRIVE, 20) {
+class Thrive(context: MangaLoaderContext) : PagedMangaParser(context, MangaParserSource.THRIVE, 20) {
 
     override val configKeyDomain = ConfigKey.Domain("thrive.moe")
 
+    override val filterCapabilities = MangaListFilterCapabilities(
+        isSearchSupported = true,
+        isSearchWithFiltersSupported = false
+    )
+
+    override suspend fun getFilterOptions() = MangaListFilterOptions()
+
     override fun getRequestHeaders(): Headers = Headers.Builder()
         .add("Referer", "https://$domain/")
-        .add("User-Agent", DEFAULT_USER_AGENT)
+        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .build()
 
-    override val availableSortOrders: Set<SortOrder> = EnumSet.of(SortOrder.NEWEST)
-
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-        val url = buildString {
-            append("https://$domain/")
-            if (!filter.query.isNullOrEmpty()) {
-                append("search?q=${filter.query.urlEncoded()}")
-            }
+        val url = when {
+            !filter.query.isNullOrEmpty() -> "https://$domain/search?q=${filter.query.urlEncoded()}"
+            else -> "https://$domain/"
         }
+
         val doc = webClient.httpGet(url).parseHtml()
-        val json = doc.selectFirst("script#__NEXT_DATA__")?.data()?.let { JSONObject(it) }
-            ?: return emptyList()
+        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return emptyList()
+        val json = JSONObject(scriptData)
 
         val props = json.optJSONObject("props")?.optJSONObject("pageProps") ?: return emptyList()
 
-        val mangaArray = when {
-            props.has("terbaru") -> props.getJSONArray("terbaru")
-            props.has("res") -> props.getJSONArray("res")        
-            props.has("data") -> props.getJSONArray("data")       
-            else -> return emptyList()
-        }
+        val array = props.optJSONArray("terbaru")
+            ?: props.optJSONArray("res")   
+            ?: props.optJSONArray("data")  
+            ?: return emptyList()
 
-        return mangaArray.mapJSON { jo ->
+        return array.mapJSON { jo ->
             val id = jo.getString("id")
-            val cover = jo.optString("cover")?.let { 
-                if (it.startsWith("http")) it else "https://uploads.mangadex.org/covers/$id/$it"
-            } ?: ""
+            val coverRaw = jo.optString("cover", "")
+            val cover = if (coverRaw.startsWith("http")) coverRaw else "https://uploads.mangadex.org/covers/$id/$coverRaw"
 
             Manga(
                 id = generateUid(id),
-                title = jo.getStringOrNull("title")?.trim() ?: "Untitled",
+                title = jo.getString("title").trim(),
+                altTitle = null,
                 url = "/title/$id",
                 publicUrl = "https://$domain/title/$id",
+                rating = 0f,
+                isNsfw = false,
                 coverUrl = cover,
-                source = source,
-                rating = RATING_UNKNOWN,
-                contentRating = ContentRating.SAFE,
+                tags = emptySet(),
+                state = null,
+                author = null,
+                source = source
             )
         }
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
-        val fullUrl = "https://$domain${manga.url}"
-        val doc = webClient.httpGet(fullUrl).parseHtml()
-        val json = doc.selectFirst("script#__NEXT_DATA__")?.data()?.let { JSONObject(it) }
-            ?: return manga
+        val doc = webClient.httpGet("https://$domain${manga.url}").parseHtml()
+        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return manga
+        val json = JSONObject(scriptData)
 
         val props = json.optJSONObject("props")?.optJSONObject("pageProps") ?: return manga
 
-        val desc = props.optString("desc_ID")?.takeIf { it.isNotBlank() }
-            ?: props.optJSONObject("desc")?.optString("en")
+        val description = props.optString("desc_ID")?.trim()
+            ?: props.optJSONObject("desc")?.optString("en")?.trim()
             ?: ""
 
-        val tags = props.optJSONArray("tags")?.map { it.toString() } ?: emptyList()
+        val tagsList = props.optJSONArray("tags")?.map { it.toString() } ?: emptyList()
+        val tags = tagsList.map { MangaTag(it.lowercase().replace(" ", "-"), it, source) }.toSet()
 
-        val chaptersArray = props.optJSONArray("chapterlist") ?: return manga.copy(description = desc)
+        val chaptersArray = props.optJSONArray("chapterlist") ?: return manga.copy(description = description, tags = tags)
+
+        val dateParser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
 
         val chapters = chaptersArray.mapJSON { ch ->
             val chId = ch.getString("chapter_id")
-            val numberStr = ch.optString("chapter_number")
-            val number = numberStr.toFloatOrNull() ?: 0f
+            val number = ch.optString("chapter_number").toFloatOrNull() ?: 0f
             val titleExtra = ch.optString("chapter_title")?.let { " - $it" } ?: ""
 
             MangaChapter(
@@ -92,33 +97,33 @@ internal class Thrive(context: MangaLoaderContext) :
                 number = number,
                 volume = 0,
                 scanlator = ch.optString("scanlator"),
-                uploadDate = dateFormat.tryParse(ch.optString("created_at")) ?: 0L,
+                uploadDate = dateParser.tryParse(ch.optString("created_at")) ?: 0L,
                 branch = null,
                 source = source
             )
         }.sortedByDescending { it.number }
 
         return manga.copy(
-            description = desc.trim().takeIf { it.isNotBlank() },
-            tags = tags.map { MangaTag(it.lowercase().replace(" ", "-"), it, source) }.toSet(),
+            description = description,
+            tags = tags,
             chapters = chapters
         )
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val doc = webClient.httpGet("https://$domain${chapter.url}").parseHtml()
-        val json = doc.selectFirst("script#__NEXT_DATA__")?.data()?.let { JSONObject(it) }
-            ?: return emptyList()
+        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return emptyList()
+        val json = JSONObject(scriptData)
 
         val props = json.optJSONObject("props")?.optJSONObject("pageProps") ?: return emptyList()
 
-        val prefix = props.optString("prefix")
+        val prefix = props.optString("prefix", "")
         val images = props.optJSONArray("image") ?: return emptyList()
 
         if (prefix.isEmpty()) return emptyList()
 
-        return images.map { filename ->
-            val url = "https://cdn.thrive.moe/data/$prefix/$filename"
+        return images.mapIndexed { index, filename ->
+            val url = "https://cdn.thrive.moe/data/$prefix/${index + 1}-$filename"
             MangaPage(
                 id = generateUid(url),
                 url = url,
@@ -127,6 +132,4 @@ internal class Thrive(context: MangaLoaderContext) :
             )
         }
     }
-
-    override val defaultIsNsfw: Boolean = false
 }
