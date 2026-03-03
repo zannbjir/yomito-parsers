@@ -18,6 +18,20 @@ internal class Thrive(context: MangaLoaderContext) :
 
     override val configKeyDomain = ConfigKey.Domain("thrive.moe")
 
+    override val availableSortOrders: Set<SortOrder> = EnumSet.of(SortOrder.NEWEST)
+
+    override val filterCapabilities: MangaListFilterCapabilities
+        get() = MangaListFilterCapabilities(
+            isMultipleTagsSupported = false,
+            isTagsExclusionSupported = false,
+            isSearchSupported = true,
+            isSearchWithFiltersSupported = false
+        )
+
+    override suspend fun getFilterOptions(): MangaListFilterOptions {
+        return MangaListFilterOptions()
+    }
+
     private fun getNextData(html: String): JSONObject {
         val document = Jsoup.parse(html)
         val scriptData = document.selectFirst("script#__NEXT_DATA__")?.data()
@@ -32,8 +46,8 @@ internal class Thrive(context: MangaLoaderContext) :
             "https://$domain/search?q=${filter.query.urlEncoded()}"
         }
 
-        val html = webClient.httpGet(url)
-        val props = getNextData(html)
+        val response = webClient.httpGet(url)
+        val props = getNextData(response.bodyString())
         
         val array = props.optJSONArray("terbaru") 
             ?: props.optJSONArray("res") 
@@ -62,8 +76,8 @@ internal class Thrive(context: MangaLoaderContext) :
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
-        val html = webClient.httpGet(manga.publicUrl)
-        val props = getNextData(html)
+        val response = webClient.httpGet(manga.publicUrl)
+        val props = getNextData(response.bodyString())
 
         val chaptersArray = props.optJSONArray("chapterlist")
         val chapters = mutableListOf<MangaChapter>()
@@ -98,8 +112,8 @@ internal class Thrive(context: MangaLoaderContext) :
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val html = webClient.httpGet("https://$domain/${chapter.url}")
-        val props = getNextData(html)
+        val response = webClient.httpGet("https://$domain/${chapter.url}")
+        val props = getNextData(response.bodyString())
         
         val prefix = props.optString("prefix")
         val images = props.getJSONArray("image")
