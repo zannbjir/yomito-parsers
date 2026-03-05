@@ -1,297 +1,209 @@
 package org.koitharu.kotatsu.parsers.site.id
 
-import androidx.collection.ArrayMap
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import okhttp3.Headers
 import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
-import org.koitharu.kotatsu.parsers.PagedMangaParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
+import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
 import java.util.*
 
 @MangaSourceParser("KOMIKAPK", "KomikApk", "id")
 internal class Komikapk(context: MangaLoaderContext) :
-	PagedMangaParser(context, MangaParserSource.KOMIKAPK, pageSize = 20) {
+	PagedMangaParser(context, MangaParserSource.KOMIKAPK, 20) {
 
 	override val configKeyDomain = ConfigKey.Domain("komikapk.app")
 
-	override val sortOrders: Set<SortOrder> = EnumSet.of(
+	override fun getRequestHeaders(): Headers = Headers.Builder()
+		.add("Referer", "https://$domain/")
+		.add("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
+		.build()
+
+	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.UPDATED,
 		SortOrder.NEWEST,
 		SortOrder.POPULARITY,
-		SortOrder.ALPHABETICAL,
 	)
 
-	override val filterCapabilities: MangaFilterCapabilities
-		get() = MangaFilterCapabilities(
+	override val filterCapabilities: MangaListFilterCapabilities
+		get() = MangaListFilterCapabilities(
 			isSearchSupported = true,
-			isSearchWithFiltersSupported = true,
 			isMultipleTagsSupported = true,
-			isTagsExclusionSupported = false,
 		)
-
-	override val availableSortOrders: Set<SortOrder>
-		get() = sortOrders
-
-	// Mapping sort order ke URL
-	private val sortOrderMap = mapOf(
-		SortOrder.UPDATED to "terbaru",
-		SortOrder.NEWEST to "terbaru",
-		SortOrder.POPULARITY to "populer",
-		SortOrder.ALPHABETICAL to "a-z",
-	)
 
 	// Genre/Tag mapping
-	private val tagsMap = ArrayMap<String, String>().apply {
-		put("action", "action")
-		put("adventure", "adventure")
-		put("comedy", "comedy")
-		put("cooking", "cooking")
-		put("crime", "crime")
-		put("demons", "demons")
-		put("doujinshi", "doujinshi")
-		put("drama", "drama")
-		put("ecchi", "ecchi")
-		put("fantasy", "fantasy")
-		put("game", "game")
-		put("gender-bender", "gender-bender")
-		put("gore", "gore")
-		put("harem", "harem")
-		put("historical", "historical")
-		put("horror", "horror")
-		put("isekai", "isekai")
-		put("josei", "josei")
-		put("magic", "magic")
-		put("martial-arts", "martial-arts")
-		put("mature", "mature")
-		put("mecha", "mecha")
-		put("medical", "medical")
-		put("military", "military")
-		put("monster", "monster")
-		put("music", "music")
-		put("mystery", "mystery")
-		put("one-shot", "one-shot")
-		put("parody", "parody")
-		put("police", "police")
-		put("psychological", "psychological")
-		put("romance", "romance")
-		put("samurai", "samurai")
-		put("school-life", "school-life")
-		put("sci-fi", "sci-fi")
-		put("seinen", "seinen")
-		put("shoujo", "shoujo")
-		put("shoujo-ai", "shoujo-ai")
-		put("shounen", "shounen")
-		put("shounen-ai", "shounen-ai")
-		put("slice-of-life", "slice-of-life")
-		put("smut", "smut")
-		put("sports", "sports")
-		put("super-power", "super-power")
-		put("supernatural", "supernatural")
-		put("survival", "survival")
-		put("thriller", "thriller")
-		put("time-travel", "time-travel")
-		put("tragedy", "tragedy")
-		put("vampire", "vampire")
-		put("webtoon", "webtoon")
-		put("yuri", "yuri")
-	}
-
-	// Type mapping
-	private val typesMap = mapOf(
-		"semua" to "semua",
-		"manga" to "manga",
-		"manhwa" to "manhwa",
-		"manhua" to "manhua",
+	private val tagsMap = mapOf(
+		"action" to "Action",
+		"adventure" to "Adventure",
+		"comedy" to "Comedy",
+		"drama" to "Drama",
+		"ecchi" to "Ecchi",
+		"fantasy" to "Fantasy",
+		"harem" to "Harem",
+		"horror" to "Horror",
+		"isekai" to "Isekai",
+		"martial-arts" to "Martial Arts",
+		"mature" to "Mature",
+		"mystery" to "Mystery",
+		"psychological" to "Psychological",
+		"romance" to "Romance",
+		"school-life" to "School Life",
+		"sci-fi" to "Sci-Fi",
+		"seinen" to "Seinen",
+		"shoujo" to "Shoujo",
+		"shounen" to "Shounen",
+		"slice-of-life" to "Slice of Life",
+		"supernatural" to "Supernatural",
+		"thriller" to "Thriller",
+		"tragedy" to "Tragedy",
 	)
 
-	override suspend fun getFilterOptions(): MangaFilterOptions {
-		return MangaFilterOptions(
-			availableTags = tagsMap.keys.map { MangaTag(title = it.replace("-", " ").capitalize(), key = it, source = source) }.toSet(),
-			availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
-			availableContentTypes = setOf(
-				MangaContentType.MANGA,
-				MangaContentType.MANHWA,
-				MangaContentType.MANHUA,
-			),
-		)
-	}
+	override suspend fun getFilterOptions() = MangaListFilterOptions(
+		availableTags = tagsMap.map { (key, title) ->
+			MangaTag(title = title, key = key, source = source)
+		}.toSet(),
+		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
+		availableContentTypes = EnumSet.of(
+			MangaContentType.MANGA,
+			MangaContentType.MANHWA,
+			MangaContentType.MANHUA,
+		),
+	)
 
-	override suspend fun getList(
-		offset: Int,
-		query: String?,
-		tags: Set<MangaTag>?,
-		sortOrder: SortOrder?,
-		state: MangaState?,
-		contentType: MangaContentType?,
-	): List<Manga> {
-		val page = (offset / pageSize) + 1
-		val url = buildListUrl(page, query, tags, sortOrder, state, contentType)
+	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val url = buildListUrl(page, filter, order)
 		val doc = webClient.httpGet(url).parseHtml()
 		return parseMangaList(doc)
 	}
 
-	private fun buildListUrl(
-		page: Int,
-		query: String?,
-		tags: Set<MangaTag>?,
-		sortOrder: SortOrder?,
-		state: MangaState?,
-		contentType: MangaContentType?,
-	): String {
-		val domain = domain
-
+	private fun buildListUrl(page: Int, filter: MangaListFilter, order: SortOrder): String {
 		// Search URL
-		if (!query.isNullOrBlank()) {
-			return "https://$domain/pencarian?q=${query.urlEncoded()}&page=$page"
+		if (!filter.query.isNullOrEmpty()) {
+			return "https://$domain/pencarian?q=${filter.query.urlEncoded()}&page=$page"
 		}
 
 		// Build pustaka URL
-		val type = when (contentType) {
+		val type = when (filter.contentType) {
 			MangaContentType.MANGA -> "manga"
 			MangaContentType.MANHWA -> "manhwa"
 			MangaContentType.MANHUA -> "manhua"
 			else -> "semua"
 		}
 
-		val tag = tags?.firstOrNull()?.key ?: "semua"
-		val sort = sortOrderMap[sortOrder] ?: "terbaru"
+		val tag = filter.tags.firstOrNull()?.key ?: "semua"
+		val sort = when (order) {
+			SortOrder.POPULARITY -> "populer"
+			else -> "terbaru"
+		}
 
 		return "https://$domain/pustaka/$type/$tag/$sort/$page"
 	}
 
 	private fun parseMangaList(doc: Document): List<Manga> {
-		val mangaList = mutableListOf<Manga>()
-
-		// Homepage manga grid
-		doc.select("a[href^='/komik/']").forEach { element ->
+		return doc.select("a[href^='/komik/']").mapNotNull { element ->
 			val href = element.attr("href")
-			if (href.startsWith("/komik/")) {
-				val slug = href.removePrefix("/komik/").removeSuffix("/")
+			val slug = href.removePrefix("/komik/").removeSuffix("/")
 
-				// Get cover
-				val coverImg = element.selectFirst("img[src*='cdn-guard']")
-				val coverUrl = coverImg?.absUrl("src") ?: coverImg?.attr("src") ?: ""
+			// Get cover
+			val coverImg = element.selectFirst("img[src*='cdn-guard']")
+			val coverUrl = coverImg?.src() ?: return@mapNotNull null
 
-				// Get title
-				val titleEl = element.selectFirst("div.font-display")
-				val title = titleEl?.text()?.trim() ?: slug.replace("-", " ").capitalize()
+			// Get title
+			val titleEl = element.selectFirst("div.font-display")
+			val title = titleEl?.text()?.trim() ?: return@mapNotNull null
 
-				// Get type (manga/manhwa/manhua)
-				val typeEl = element.selectFirst("div.bg-primary, div.bg-secondary, div.bg-neutral")
-				val typeText = typeEl?.text()?.lowercase() ?: ""
-
-				mangaList.add(
-					Manga(
-						id = generateUid(slug),
-						title = title,
-						altTitle = null,
-						url = href,
-						publicUrl = "https://${domain}$href",
-						rating = RATING_UNKNOWN,
-						isNsfw = false,
-						coverUrl = coverUrl,
-						tags = emptySet(),
-						state = MangaState.ONGOING,
-						author = null,
-						source = source,
-					),
-				)
-			}
-		}
-
-		// Remove duplicates
-		return mangaList.distinctBy { it.id }
+			Manga(
+				id = generateUid(slug),
+				title = title,
+				altTitles = emptySet(),
+				url = href,
+				publicUrl = "https://$domain$href",
+				rating = RATING_UNKNOWN,
+				contentRating = null,
+				coverUrl = coverUrl,
+				largeCoverUrl = coverUrl,
+				tags = emptySet(),
+				state = null,
+				authors = emptySet(),
+				source = source,
+			)
+		}.distinctBy { it.id }
 	}
 
-	override suspend fun getDetails(manga: Manga): Manga = coroutineScope {
-		val doc = webClient.httpGet(manga.url).parseHtml()
+	override suspend fun getDetails(manga: Manga): Manga {
+		val doc = webClient.httpGet(manga.publicUrl).parseHtml()
 
 		// Title
 		val title = doc.selectFirst("h1.font-label")?.text()?.trim() ?: manga.title
 
 		// Cover
-		val cover = doc.selectFirst("img.h-\\[200px\\]")?.absUrl("src") ?: manga.coverUrl
+		val cover = doc.selectFirst("img.h-\\[200px\\]")?.src() ?: manga.coverUrl
 
 		// Description
 		val description = doc.selectFirst("div.font-display.mt-5.text-center")?.text()?.trim()
 
 		// Tags/Genres
-		val tags = doc.select("a[href^='/pustaka/semua/'][href*='/terbaru/']")
-			.mapNotNull { a ->
-				val tagSlug = a.attr("href")
-					.split("/")
-					.getOrNull(3) ?: return@mapNotNull null
-				MangaTag(
-					title = a.text().trim().capitalize(),
-					key = tagSlug,
-					source = source,
-				)
-			}
-			.toSet()
+		val tags = doc.select("a[href^='/pustaka/semua/'][href*='/terbaru/']").mapNotNull { a ->
+			val tagSlug = a.attr("href").split("/").getOrNull(3) ?: return@mapNotNull null
+			MangaTag(
+				title = a.text().trim(),
+				key = tagSlug,
+				source = source,
+			)
+		}.toSet()
 
-		// State - check for completed status in description or title
+		// State - check for completed status
 		val state = when {
 			doc.html().contains("completed", ignoreCase = true) ||
-			doc.html().contains("tamat", ignoreCase = true) ||
-			doc.selectFirst("div:contains(Completed)") != null -> MangaState.FINISHED
+			doc.html().contains("tamat", ignoreCase = true) -> MangaState.FINISHED
 			else -> MangaState.ONGOING
 		}
 
 		// Author
-		val author = doc.selectFirst("div.font-label:contains(BY:) + span, div:contains(BY:) span")
-			?.text()?.trim()
+		val authors = doc.selectFirst("div:contains(BY:)")
+			?.text()?.removePrefix("BY:")?.trim()
+			?.let { setOf(it) } ?: emptySet()
 
-		// Type (check from badges)
-		val isNsfw = doc.select("a.btn-soft").any {
-			it.text().lowercase() in listOf("mature", "smut", "ecchi", "adult")
+		// NSFW detection
+		val contentRating = if (tags.any { it.title.lowercase() in listOf("mature", "smut", "ecchi", "adult") }) {
+			ContentRating.ADULT
+		} else {
+			null
 		}
 
 		// Chapters
-		val chapters = async {
-			val chapterList = mutableListOf<MangaChapter>()
+		val chapters = doc.select("a[href^='/komik/'][href*='/kmapk/']").mapNotNull { a ->
+			val chapterUrl = a.attr("href")
+			val chapterSlug = chapterUrl.split("/").lastOrNull() ?: return@mapNotNull null
 
-			doc.select("a[href^='/komik/'][href*='/kmapk/'], a[href^='/komik/'][href*='/chapter']").forEach { a ->
-				val chapterUrl = a.attr("href")
-				val chapterSlug = chapterUrl.split("/").lastOrNull() ?: return@forEach
+			val chapterTitle = a.text().trim()
+			val number = chapterSlug.toFloatOrNull() ?: parseChapterNumber(chapterTitle)
 
-				val chapterName = a.selectFirst("div")?.text()?.trim() ?: "Chapter $chapterSlug"
+			MangaChapter(
+				id = generateUid(chapterUrl),
+				title = chapterTitle,
+				url = chapterUrl,
+				number = number,
+				volume = 0,
+				scanlator = null,
+				uploadDate = 0L,
+				branch = null,
+				source = source,
+			)
+		}.distinctBy { it.url }.sortedByDescending { it.number }
 
-				// Parse chapter number
-				val number = chapterSlug.toFloatOrNull() ?: parseChapterNumber(chapterName)
-
-				chapterList.add(
-					MangaChapter(
-						id = generateUid(chapterUrl),
-						name = chapterName,
-						number = number,
-						url = chapterUrl,
-						scanlator = null,
-						uploadDate = 0L,
-						branch = null,
-						source = source,
-					),
-				)
-			}
-
-			// Sort by chapter number descending
-			chapterList.sortedByDescending { it.number }
-		}
-
-		manga.copy(
+		return manga.copy(
 			title = title,
-			altTitle = null,
 			description = description,
 			coverUrl = cover,
+			largeCoverUrl = cover,
 			tags = tags,
 			state = state,
-			author = author,
-			isNsfw = isNsfw,
-			chapters = chapters.await(),
+			authors = authors,
+			contentRating = contentRating,
+			chapters = chapters,
 		)
 	}
 
@@ -302,54 +214,21 @@ internal class Komikapk(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val doc = webClient.httpGet(chapter.url).parseHtml()
+		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
 
-		val pages = mutableListOf<MangaPage>()
+		return doc.select("section img[src*='.jpg'], section img[src*='.png'], section img[src*='.webp']").mapNotNull { img ->
+			val imageUrl = img.src() ?: return@mapNotNull null
 
-		// Find all images in chapter
-		doc.select("img[src*='komikapk-chapter'], img[src*='cdn-guard.com/komikapk-chapter']").forEach { img ->
-			val imageUrl = img.absUrl("src")
-
-			if (imageUrl.isNotBlank()) {
-				pages.add(
-					MangaPage(
-						id = generateUid(imageUrl),
-						url = imageUrl,
-						preview = null,
-						source = source,
-					),
-				)
+			if (imageUrl.isBlank() || !imageUrl.contains("cdn-guard")) {
+				return@mapNotNull null
 			}
-		}
 
-		// Also check for images in section
-		doc.select("section img[src*='.jpg'], section img[src*='.png'], section img[src*='.webp']").forEach { img ->
-			val imageUrl = img.absUrl("src")
-
-			if (imageUrl.isNotBlank() && imageUrl.contains("cdn-guard")) {
-				pages.add(
-					MangaPage(
-						id = generateUid(imageUrl),
-						url = imageUrl,
-						preview = null,
-						source = source,
-					),
-				)
-			}
-		}
-
-		return pages.distinctBy { it.id }
-	}
-
-	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
-		super.onCreateConfig(keys)
-		keys.add(userAgentKey)
-	}
-
-	companion object {
-		private val userAgentKey = ConfigKey.UserAgent(
-			"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) " +
-				"Chrome/131.0.0.0 Mobile Safari/537.36",
-		)
+			MangaPage(
+				id = generateUid(imageUrl),
+				url = imageUrl,
+				preview = null,
+				source = source,
+			)
+		}.distinctBy { it.id }
 	}
 }
