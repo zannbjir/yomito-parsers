@@ -1,111 +1,47 @@
 package org.koitharu.kotatsu.parsers.site.mangareader.id
 
-import androidx.collection.ArrayMap
 import okhttp3.Headers
-import org.jsoup.nodes.Document
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
-import org.koitharu.kotatsu.parsers.model.*
-import org.koitharu.kotatsu.parsers.site.wpcomics.WpComicsParser
+import org.koitharu.kotatsu.parsers.model.MangaParserSource
+import org.koitharu.kotatsu.parsers.site.mangareader.MangaReaderParser
 import org.koitharu.kotatsu.parsers.util.*
-import java.util.*
 
-@MangaSourceParser("MANHWADESU", "ManhwaDesu", "id", ContentType.HENTAI)
+@MangaSourceParser("MANHWADESU", "ManhwaDesu", "id")
 internal class ManhwadesuParser(context: MangaLoaderContext) :
-    WpComicsParser(context, MangaParserSource.MANHWADESU, "manhwadesu.art") {
-
-    init {
-        paginator.firstPage = 1
-        searchPaginator.firstPage = 1
-    }
-
+    MangaReaderParser(context, MangaParserSource.MANHWADESU, "manhwadesu.art", pageSize = 20, searchPageSize = 10) {
+    
     override val listUrl = "/komik"
+    
+    override val isNetShieldProtected = true
 
-    override val filterCapabilities = MangaListFilterCapabilities(
-        isMultipleTagsSupported = false,
-        isTagsExclusionSupported = false,
-        isSearchSupported = true,
-        isSearchWithFiltersSupported = true
+    override val userAgentKey = org.koitharu.kotatsu.parsers.config.ConfigKey.UserAgent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
 
-    // Override headers agar gambar tidak 403 Forbidden
-    override fun getPagesHeaders(chapter: MangaChapter): Headers {
+    override val selectMangaList = ".listupd .bs .bsx"
+    override val selectMangaListImg = "img"
+    override val selectMangaListTitle = ".tt"
+    override val selectChapter = "#chapterlist ul li"
+    override val selectPage = "#readerarea img"
+
+    override fun onCreateConfig(keys: MutableCollection<org.koitharu.kotatsu.parsers.config.ConfigKey<*>>) {
+        super.onCreateConfig(keys)
+    }
+
+    private fun getSecurityHeaders(): Headers {
         return Headers.Builder()
-            .add("Referer", "https://$domain/")
-            .add("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+            .add("Accept-Language", "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
+            .add("Cache-Control", "max-age=0")
+            .add("Sec-Ch-Ua", "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"")
+            .add("Sec-Ch-Ua-Mobile", "?0")
+            .add("Sec-Ch-Ua-Platform", "\"Windows\"")
+            .add("Sec-Fetch-Dest", "document")
+            .add("Sec-Fetch-Mode", "navigate")
+            .add("Sec-Fetch-Site", "none")
+            .add("Sec-Fetch-User", "?1")
+            .add("Upgrade-Insecure-Requests", "1")
             .build()
-    }
-
-    override fun parseMangaList(doc: Document, tagMap: ArrayMap<String, MangaTag>): List<Manga> {
-        return doc.select(".listupd .bs, .listupdate .bs").mapNotNull { el ->
-            val a = el.selectFirst("a") ?: return@mapNotNull null
-            val url = a.attrAsRelativeUrl("href") 
-            val img = el.selectFirst("img")
-            val coverUrl = img?.attr("data-src")?.takeIf { it.isNotEmpty() } 
-                ?: img?.src().orEmpty()
-
-            Manga(
-                id = generateUid(url),
-                title = el.select(".tt").text().trim(),
-                altTitles = emptySet(),
-                url = url,
-                publicUrl = a.attrAsAbsoluteUrl("href"),
-                rating = RATING_UNKNOWN,
-                contentRating = null,
-                coverUrl = coverUrl,
-                largeCoverUrl = coverUrl,
-                tags = emptySet(),
-                state = null,
-                authors = emptySet(),
-                source = source,
-                description = null
-            )
-        }
-    }
-
-    override suspend fun getDetails(manga: Manga): Manga {
-        val doc = webClient.httpGet(manga.publicUrl).parseHtml()
-        
-        val chapters = doc.select("#chapterlist li").mapIndexed { i, el ->
-            val a = el.selectFirst("a") ?: return@mapIndexed null
-            val href = a.attrAsRelativeUrl("href")
-            val title = el.select(".chapternum").text().trim()
-            
-            MangaChapter(
-                id = generateUid(href),
-                title = title.ifEmpty { "Chapter ${i + 1}" },
-                url = href,
-                number = title.replace(Regex("[^0-9.]"), "").toFloatOrNull() ?: (i + 1f),
-                scanlator = null,
-                branch = null,
-                source = source,
-                volume = 0,
-                uploadDate = 0L
-            )
-        }.reversed()
-
-        return manga.copy(
-            description = doc.select(".entry-content p").text().trim(),
-            chapters = chapters
-        )
-    }
-
-    override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getPagesHeaders(chapter)).parseHtml()
-        
-        return doc.select("#readerarea img").mapNotNull { img ->
-            val url = img.attr("data-src").takeIf { it.isNotEmpty() }
-                ?: img.attr("data-lazy-src").takeIf { it.isNotEmpty() }
-                ?: img.src()
-            
-            if (url.isBlank() || url.contains("loader") || url.contains("ads")) return@mapNotNull null
-            
-            MangaPage(
-                id = generateUid(url),
-                url = url,
-                preview = null,
-                source = source
-            )
-        }.distinctBy { it.url }
-    }
+    }   
 }
