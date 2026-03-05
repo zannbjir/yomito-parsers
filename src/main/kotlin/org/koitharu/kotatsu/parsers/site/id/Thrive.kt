@@ -34,12 +34,12 @@ internal class Thrive(context: MangaLoaderContext) :
             "Medical", "Mystery", "Psychological", "Romance", "Sci-Fi", 
             "Slice of Life", "Sports", "Superhero", "Thriller", "Tragedy"
         )
-        return MangaListFilterOptions(
-            tags = genres.map { name -> 
-                val key = name.lowercase().replace(" ", "-").replace("'", "")
-                MangaTag(name, key, source) 
-            }
-        )
+        val options = MangaListFilterOptions()
+        options.tags = genres.map { name -> 
+            val key = name.lowercase().replace(" ", "-").replace("'", "")
+            MangaTag(name, key, source) 
+        }
+        return options
     }
 
     private fun getNextData(html: String): JSONObject {
