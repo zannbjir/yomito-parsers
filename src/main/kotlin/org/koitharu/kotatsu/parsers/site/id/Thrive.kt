@@ -47,7 +47,8 @@ internal class Thrive(context: MangaLoaderContext) :
         }
 
         val response = webClient.httpGet(url)
-        val props = getNextData(response.bodyString())
+        val html = response.body.use { it.string() }
+        val props = getNextData(html)
         
         val array = props.optJSONArray("terbaru") 
             ?: props.optJSONArray("res") 
@@ -66,7 +67,7 @@ internal class Thrive(context: MangaLoaderContext) :
                 largeCoverUrl = jo.optString("cover"),
                 authors = emptySet(),
                 tags = emptySet(),
-                state = null,
+                state = MangaState.ONGOING,
                 description = null,
                 contentRating = null,
                 source = source,
@@ -77,7 +78,8 @@ internal class Thrive(context: MangaLoaderContext) :
 
     override suspend fun getDetails(manga: Manga): Manga {
         val response = webClient.httpGet(manga.publicUrl)
-        val props = getNextData(response.bodyString())
+        val html = response.body.use { it.string() }
+        val props = getNextData(html)
 
         val chaptersArray = props.optJSONArray("chapterlist")
         val chapters = mutableListOf<MangaChapter>()
@@ -113,7 +115,8 @@ internal class Thrive(context: MangaLoaderContext) :
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val response = webClient.httpGet("https://$domain/${chapter.url}")
-        val props = getNextData(response.bodyString())
+        val html = response.body.use { it.string() }
+        val props = getNextData(html)
         
         val prefix = props.optString("prefix")
         val images = props.getJSONArray("image")
