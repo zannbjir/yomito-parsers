@@ -7,7 +7,6 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.jsoup.nodes.Document
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
-import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.ContentRating
 import org.koitharu.kotatsu.parsers.model.ContentType
@@ -43,7 +42,6 @@ import java.util.Locale
  * Theme: https://themesinfo.com/natsu_id-theme-wordpress-c8x1c
  * Author: Dzul Qurnain
  */
-
 internal abstract class NatsuParser(
     context: MangaLoaderContext,
     source: MangaParserSource,
@@ -51,11 +49,6 @@ internal abstract class NatsuParser(
 ) : PagedMangaParser(context, source, pageSize, pageSize) {
 
     override val sourceLocale: Locale = Locale.ENGLISH
-
-    override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
-        super.onCreateConfig(keys)
-        keys.add(userAgentKey)
-    }
 
     override fun getRequestHeaders() = super.getRequestHeaders().newBuilder()
         .add("Referer", "https://$domain/")
@@ -300,374 +293,6 @@ internal abstract class NatsuParser(
         )
     }
 
-	protected open suspend fun loadChapters(
-		mangaId: String,
-		mangaAbsoluteUrl: String,
-	): List<MangaChapter> {
-		val headers = Headers.headersOf(
-			"HX-Request", "true",
-			"HX-Target", "chapter-list",
-			"HX-Trigger", "chapter-list",
-			"HX-Current-URL", mangaAbsoluteUrl,
-			"Referer", mangaAbsoluteUrl,
-		)
-
-		return buildList {
-			for (page in 1..50) {
-				val url = urlBuilder()
-					.addPathSegment("wp-admin")
-					.addPathSegment("admin-ajax.php")
-					.addQueryParameter("manga_id", mangaId)
-					.addQueryParameter("page", page.toString())
-					.addQueryParameter("action", "chapter_list")
-
-				// Trying to force stop when chapterElements not exist
-				val chapterElements = try {
-					webClient.httpGet(url.build(), headers).parseHtml()
-				} catch (e: HttpStatusException) {
-					if (e.statusCode == 520) {
-						break
-					} else {
-						throw e
-					}
-				}
-
-				val response = chapterElements.select("div#chapter-list > div[data-chapter-number]")
-				if (response.isEmpty()) break
-
-				// Mapping
-				response.mapNotNullTo(this) { element ->
-					val a = element.selectFirst("a") ?: return@mapNotNullTo null
-					val href = a.attrAsRelativeUrl("href").takeIf { it.isNotBlank() } ?: return@mapNotNullTo null
-
-					MangaChapter(
-						id = generateUid(href),
-						title = element.selectFirst("div.font-medium span")?.text() ?: "",
-						url = href,
-						number = element.attr("data-chapter-number").toFloatOrNull() ?: -1f,
-						volume = 0,
-						scanlator = null,
-						uploadDate = parseDate(element.selectFirst("time")?.text()),
-						branch = null,
-						source = source,
-					)
-				}
-			}
-		}.reversed()
-	}
-
-    override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
-        return doc.select("main section section > img").map { img ->
-            val url = img.requireSrc().toRelativeUrl(domain)
-            MangaPage(
-                id = generateUid(url),
-                url = url,
-                preview = null,
-                source = source,
-            )
-        }
-    }
-
-    protected open suspend fun fetchAvailableTags(): Set<MangaTag> {
-        return try {
-            // Try to fetch from WP JSON API first (more reliable)
-            val response = webClient.httpGet("https://${domain}/wp-json/wp/v2/genre?per_page=100&page=1&orderby=count&order=desc")
-            val jsonText = response.body.use { it.string() }
-            val jsonArray = org.json.JSONArray(jsonText)
-            val tags = mutableSetOf<MangaTag>()
-
-            for (i in 0 until jsonArray.length()) {
-                val item = jsonArray.getJSONObject(i)
-                val slug = item.optString("slug").takeIf { it.isNotBlank() } ?: continue
-                val name = item.optString("name").takeIf { it.isNotBlank() } ?: continue
-
-                tags += MangaTag(
-                    title = name.toTitleCase(),
-                    key = slug,
-                    source = source
-                )
-            }
-            tags
-        } catch (_: Exception) {
-            // Fallback to advanced-search page method
-            try {
-                val doc = webClient.httpGet("https://${domain}/advanced-search/").parseHtml()
-                val scriptContent = doc.select("script")
-                    .firstOrNull { it.data().contains("var searchTerms") }
-                    ?.data()
-                    ?: return emptySet()
-
-                val jsonString = scriptContent
-                    .substringAfter("var searchTerms =")
-                    .substringBeforeLast(";")
-                    .trim()
-
-                val json = org.json.JSONObject(jsonString)
-                val genreObject = json.optJSONObject("genre") ?: return emptySet()
-                val tags = mutableSetOf<MangaTag>()
-
-                for (key in genreObject.keys()) {
-                    val item = genreObject.optJSONObject(key) ?: continue
-                    val taxonomy = item.optString("taxonomy")
-                    if (taxonomy != "genre") continue
-                    val slug = item.optString("slug").takeIf { it.isNotBlank() } ?: continue
-                    val name = item.optString("name").takeIf { it.isNotBlank() } ?: continue
-
-                    tags += MangaTag(
-                        title = name.toTitleCase(),
-                        key = slug,
-                        source = source
-                    )
-                }
-                tags
-            } catch (_: Exception) {
-                emptySet()
-            }
-        }
-    }
-
-    protected open fun parseDate(dateStr: String?): Long {
-        if (dateStr.isNullOrEmpty()) return 0L
-
-        return try {
-            when {
-                dateStr.contains("ago") -> {
-                    val number = Regex("""(\d+)""").find(dateStr)?.value?.toIntOrNull() ?: return 0
-                    val cal = Calendar.getInstance()
-                    when {
-                        dateStr.contains("min") -> cal.apply { add(Calendar.MINUTE, -number) }
-                        dateStr.contains("hour") -> cal.apply { add(Calendar.HOUR, -number) }
-                        dateStr.contains("day") -> cal.apply { add(Calendar.DAY_OF_MONTH, -number) }
-                        dateStr.contains("week") -> cal.apply {
-                            add(
-                                Calendar.WEEK_OF_YEAR,
-                                -number,
-                            )
-                        }
-
-                        dateStr.contains("month") -> cal.apply { add(Calendar.MONTH, -number) }
-                        dateStr.contains("year") -> cal.apply { add(Calendar.YEAR, -number) }
-                        else -> cal
-                    }.timeInMillis
-                }
-
-                else -> {
-                    SimpleDateFormat("MMM dd, yyyy", sourceLocale).parse(dateStr)?.time ?: 0
-                }
-            }
-        } catch (_: Exception) {
-            0L
-        }
-    }
-
-    // Utils
-    private val multipartHttpClient by lazy {
-        OkHttpClient.Builder()
-            .build()
-    }
-
-    protected open suspend fun httpPost(url: String, form: Map<String, String>, extraHeaders: Headers? = null): Document {
-        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-        form.forEach { (k, v) -> body.addFormDataPart(k, v) }
-
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .post(body.build())
-            .addHeader("Referer", "https://${domain}/advanced-search/")
-            .addHeader("Origin", "https://${domain}")
-
-        if (extraHeaders != null) {
-            for (name in extraHeaders.names()) {
-                if (!name.equals("Content-Type", ignoreCase = true)) {
-                    val value = extraHeaders[name] ?: continue
-                    requestBuilder.addHeader(name, value)
-                }
-            }
-        }
-
-        val request = requestBuilder.build()
-        val response = multipartHttpClient.newCall(request).await()
-        return response.parseHtml()
-    }
- }
-        } else formParts["author"] = "[]"
-
-        formParts["artist"] = "[]"
-        formParts["project"] = "0"
-
-        if (filter.types.isNotEmpty()) {
-            val typeArray = JSONArray()
-            filter.types.forEach { type ->
-                when (type) {
-                    ContentType.MANGA -> typeArray.put("manga")
-                    ContentType.MANHWA -> typeArray.put("manhwa")
-                    ContentType.MANHUA -> typeArray.put("manhua")
-                    ContentType.COMICS -> typeArray.put("comic")
-                    ContentType.NOVEL -> typeArray.put("novel")
-                    else -> {}
-                }
-            }
-            formParts["type"] = typeArray.toString()
-        } else {
-            formParts["type"] = "[]"
-        }
-
-        if (filter.states.isNotEmpty()) {
-            val statusArray = JSONArray()
-            filter.states.forEach { state ->
-                when (state) {
-                    MangaState.ONGOING -> statusArray.put("ongoing")
-                    MangaState.FINISHED -> statusArray.put("completed")
-                    MangaState.PAUSED -> statusArray.put("on-hiatus")
-                    else -> {}
-                }
-            }
-            formParts["status"] = statusArray.toString()
-        } else {
-            formParts["status"] = "[]"
-        }
-
-        formParts["order"] = "desc"
-        formParts["orderby"] = when (order) {
-            SortOrder.UPDATED -> "updated"
-            SortOrder.POPULARITY -> "popular"
-            SortOrder.ALPHABETICAL -> "title"
-            SortOrder.RATING -> "rating"
-            else -> "popular"
-        }
-
-        if (!filter.query.isNullOrEmpty()) {
-            formParts["query"] = filter.query
-        }
-
-        val html = httpPost(url, formParts)
-        return parseMangaList(html)
-    }
-
-    protected open fun parseMangaList(doc: Document): List<Manga> {
-        val mangaList = mutableListOf<Manga>()
-
-        doc.select("body > div").forEach { divElement ->
-            val mainLink = divElement.selectFirst("a[href*='/manga/']") ?: return@forEach
-            val href = mainLink.attrAsRelativeUrl("href")
-
-            if (href.contains("/chapter-")) return@forEach
-
-            val title = divElement.selectFirst("a.text-base, a.text-white, h1")?.text()?.trim()
-                ?: mainLink.attr("title").ifEmpty { mainLink.text() }
-
-            val coverUrl = divElement.selectFirst("img")?.src()
-
-            val ratingText = divElement.selectFirst(".numscore, span.text-yellow-400")?.text()
-            val rating = ratingText?.toFloatOrNull()?.let {
-                if (it > 5) it / 10f else it / 5f
-            } ?: RATING_UNKNOWN
-
-            val stateText =
-                divElement.selectFirst("span.bg-accent, p:contains(Ongoing), p:contains(Completed)")
-                    ?.text()?.lowercase()
-            val state = when {
-                stateText?.contains("ongoing") == true -> MangaState.ONGOING
-                stateText?.contains("completed") == true -> MangaState.FINISHED
-                stateText?.contains("hiatus") == true -> MangaState.PAUSED
-                else -> null
-            }
-
-            mangaList.add(
-                Manga(
-                    id = generateUid(href),
-                    url = href,
-                    title = title,
-                    altTitles = emptySet(),
-                    publicUrl = mainLink.attrAsAbsoluteUrl("href"),
-                    rating = rating,
-                    contentRating = if (isNsfwSource) ContentRating.ADULT else null,
-                    coverUrl = coverUrl,
-                    tags = emptySet(),
-                    state = state,
-                    authors = emptySet(),
-                    source = source,
-                ),
-            )
-        }
-
-        return mangaList
-    }
-
-    override suspend fun getDetails(manga: Manga): Manga {
-        val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
-
-        // Manga ID for chapter loading
-        val mangaId = doc.selectFirst("[hx-get*='manga_id=']")
-            ?.attr("hx-get")
-            ?.substringAfter("manga_id=")
-            ?.substringBefore("&")
-            ?.trim()
-            ?: doc.selectFirst("input#manga_id, [data-manga-id]")
-                ?.let { it.attr("value").ifEmpty { it.attr("data-manga-id") } }
-            ?: manga.url.substringAfterLast("/manga/").substringBefore("/")
-
-        val titleElement = doc.selectFirst("h1[itemprop=name]")
-        val title = titleElement?.text() ?: manga.title
-
-        val altTitles = titleElement?.nextElementSibling()?.text()
-            ?.split(',')
-            ?.mapNotNull { it.trim().takeIf(String::isNotBlank) }
-            ?.toSet()
-            ?: emptySet()
-
-        val description = doc.select("div[itemprop=description]")
-            .joinToString("\n\n") { it.text() }
-            .trim()
-            .takeIf { it.isNotBlank() }
-
-        val coverUrl = doc.selectFirst("div[itemprop=image] > img")?.src()
-            ?: manga.coverUrl
-
-        val tags = doc.select("a[itemprop=genre]").mapNotNullToSet { a ->
-            MangaTag(
-                key = a.attr("href").substringAfterLast("/genre/").removeSuffix("/"),
-                title = a.text().toTitleCase(),
-                source = source,
-            )
-        }
-
-        fun findInfoText(key: String): String? {
-            return doc.select("div.space-y-2 > .flex:has(h4)")
-                .find { it.selectFirst("h4")?.text()?.contains(key, ignoreCase = true) == true }
-                ?.selectFirst("p.font-normal")?.text()
-        }
-
-        val stateText = findInfoText("Status")?.lowercase()
-        val state = when {
-            stateText?.contains("ongoing") == true -> MangaState.ONGOING
-            stateText?.contains("completed") == true -> MangaState.FINISHED
-            stateText?.contains("hiatus") == true -> MangaState.PAUSED
-            else -> manga.state
-        }
-
-        val authors = findInfoText("Author")
-            ?.split(",")
-            ?.map { it.trim() }
-            ?.toSet() ?: emptySet()
-
-        val chapters = loadChapters(mangaId, manga.url.toAbsoluteUrl(domain))
-
-        return manga.copy(
-            title = title,
-            altTitles = altTitles,
-            description = description,
-            coverUrl = coverUrl,
-            tags = tags,
-            state = state,
-            authors = authors,
-            chapters = chapters,
-        )
-    }
-
-    protected open val hxTrigger = "chapter-list"
-
     protected open suspend fun loadChapters(
         mangaId: String,
         mangaAbsoluteUrl: String,
@@ -675,10 +300,10 @@ internal abstract class NatsuParser(
         val chapters = mutableListOf<MangaChapter>()
         var page = 1
 
-        val headers = Headers.headersOf(
+        val headers = Headers.Companion.headersOf(
             "hx-request", "true",
             "hx-target", "chapter-list",
-            "hx-trigger", hxTrigger,
+            "hx-trigger", "chapter-list",
             "Referer", mangaAbsoluteUrl,
         )
 
@@ -735,7 +360,7 @@ internal abstract class NatsuParser(
         return try {
             // Try to fetch from WP JSON API first (more reliable)
             val response = webClient.httpGet("https://${domain}/wp-json/wp/v2/genre?per_page=100&page=1&orderby=count&order=desc")
-            val jsonText = response.body.use { it.string() }
+            val jsonText = response.body.use { it?.string() } ?: return emptySet()
             val jsonArray = org.json.JSONArray(jsonText)
             val tags = mutableSetOf<MangaTag>()
 
@@ -751,7 +376,7 @@ internal abstract class NatsuParser(
                 )
             }
             tags
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             // Fallback to advanced-search page method
             try {
                 val doc = webClient.httpGet("https://${domain}/advanced-search/").parseHtml()
@@ -783,7 +408,7 @@ internal abstract class NatsuParser(
                     )
                 }
                 tags
-            } catch (_: Exception) {
+            } catch (e2: Exception) {
                 emptySet()
             }
         }
@@ -842,7 +467,7 @@ internal abstract class NatsuParser(
         if (extraHeaders != null) {
             for (name in extraHeaders.names()) {
                 if (!name.equals("Content-Type", ignoreCase = true)) {
-                    val value = extraHeaders[name] ?: continue
+                    val value = extraHeaders.get(name) ?: continue
                     requestBuilder.addHeader(name, value)
                 }
             }
