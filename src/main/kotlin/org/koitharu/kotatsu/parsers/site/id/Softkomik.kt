@@ -1,5 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.id
 
+import okhttp3.Headers
 import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -14,7 +15,7 @@ import java.util.*
 internal class Softkomik(context: MangaLoaderContext) :
     PagedMangaParser(context, MangaParserSource.SOFTKOMIK, 20) {
 
-    override val configKeyDomain = ConfigKey.Domain("softkomik.com")
+    override val configKeyDomain = ConfigKey.Domain("softkomik.co")
     private val apiUrl = "https://v2.softdevices.my.id"
     private val coverUrl = "https://cover.softdevices.my.id/softkomik-cover"
 
@@ -43,32 +44,30 @@ internal class Softkomik(context: MangaLoaderContext) :
             "Seinen", "Shoujo", "Shounen", "Slice of Life", "Sports", 
             "Supernatural", "Thriller", "Tragedy", "Webtoons"
         )
-        return MangaListFilterOptions(
-            tags = genres.map { MangaTag(it, it, source) }
-        )
+        return MangaListFilterOptions() 
     }
 
     private suspend fun updateSession() {
         if (cachedToken != null && System.currentTimeMillis() < expiry) return
         try {
             webClient.httpPost("https://$domain/api/me", emptyMap())
-            val response = webClient.httpGet("https://$domain/api/sessions").body.use { it.string() }
-            val json = JSONObject(response)
+            val response = webClient.httpGet("https://$domain/api/sessions")
+            val json = JSONObject(response.body?.string() ?: "")
             cachedToken = json.optString("token")
             cachedSign = json.optString("sign")
             expiry = json.optLong("ex", 0)
         } catch (e: Exception) {
-            // Fallback jika session gagal diambil
+            // Error handling
         }
     }
 
-    private fun getApiHeaders(): Map<String, String> {
-        return mapOf(
-            "X-Token" to (cachedToken ?: ""),
-            "X-Sign" to (cachedSign ?: ""),
-            "Referer" to "https://$domain/",
-            "Origin" to "https://$domain"
-        )
+    private fun getApiHeaders(): Headers {
+        return Headers.Builder()
+            .add("X-Token", cachedToken ?: "")
+            .add("X-Sign", cachedSign ?: "")
+            .add("Referer", "https://$domain/")
+            .add("Origin", "https://$domain")
+            .build()
     }
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
@@ -77,26 +76,22 @@ internal class Softkomik(context: MangaLoaderContext) :
         val url = if (!filter.query.isNullOrEmpty()) {
             "$apiUrl/komik?name=${filter.query.urlEncoded()}&search=true&limit=20&page=$page"
         } else {
-            val builder = "$apiUrl/komik?limit=20&page=$page".toUri().buildUpon()
-            
-            builder.appendQueryParameter("sortBy", when (order) {
+            val sortBy = when (order) {
                 SortOrder.POPULARITY -> "popular"
                 else -> "newKomik"
-            })
-
+            }
+            var requestUrl = "$apiUrl/komik?limit=20&page=$page&sortBy=$sortBy"
+            
             filter.tags.firstOrNull()?.let {
-                builder.appendQueryParameter("genre", it.key)
+                requestUrl += "&genre=${it.key.urlEncoded()}"
             }
-
-            filter.states.oneOrNull()?.let {
-                builder.appendQueryParameter("status", if (it == MangaState.FINISHED) "tamat" else "ongoing")
-            }
-
-            builder.toString()
+            
+            requestUrl
         }
 
-        val response = webClient.httpGet(url, getApiHeaders()).body.use { it.string() }
-        val data = JSONObject(response).optJSONArray("data") ?: return emptyList()
+        val response = webClient.httpGet(url, getApiHeaders())
+        val bodyString = response.body?.string() ?: return emptyList()
+        val data = JSONObject(bodyString).optJSONArray("data") ?: return emptyList()
 
         return data.mapJSON { jo ->
             val slug = jo.getString("title_slug")
@@ -105,7 +100,7 @@ internal class Softkomik(context: MangaLoaderContext) :
                 id = generateUid(slug),
                 title = jo.getString("title"),
                 url = slug,
-                publicUrl = "https://$domain/komik/$slug",
+                publicUrl = "https://$domain/$slug",
                 coverUrl = "$coverUrl/$img",
                 source = source,
                 rating = RATING_UNKNOWN,
@@ -118,12 +113,13 @@ internal class Softkomik(context: MangaLoaderContext) :
 
     override suspend fun getDetails(manga: Manga): Manga {
         updateSession()
-        val response = webClient.httpGet("$apiUrl/komik/${manga.url}/chapter?limit=9999", getApiHeaders()).body.use { it.string() }
-        val chaptersArray = JSONObject(response).getJSONArray("chapter")
+        val response = webClient.httpGet("$apiUrl/${manga.url}/chapter?limit=9999", getApiHeaders())
+        val bodyString = response.body?.string() ?: ""
+        val chaptersArray = JSONObject(bodyString).getJSONArray("chapter")
 
         val chapters = chaptersArray.mapJSON { ch ->
             val chNum = ch.getString("chapter")
-            val chUrl = "/komik/${manga.url}/chapter/$chNum"
+            val chUrl = "/${manga.url}/chapter/$chNum"
             MangaChapter(
                 id = generateUid(chUrl),
                 title = "Chapter $chNum",
@@ -132,7 +128,8 @@ internal class Softkomik(context: MangaLoaderContext) :
                 scanlator = null,
                 branch = null,
                 source = source,
-                volume = 0
+                volume = 0,
+                uploadDate = 0L
             )
         }
 
@@ -141,9 +138,10 @@ internal class Softkomik(context: MangaLoaderContext) :
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         updateSession()
-        val response = webClient.httpGet("https://$domain${chapter.url}").body.use { it.string() }
+        val response = webClient.httpGet("https://$domain${chapter.url}")
+        val html = response.body?.string() ?: ""
         
-        val nextDataStr = response.substringAfter("<script id=\"__NEXT_DATA__\" type=\"application/json\">")
+        val nextDataStr = html.substringAfter("<script id=\"__NEXT_DATA__\" type=\"application/json\">")
                                   .substringBefore("</script>")
         val props = JSONObject(nextDataStr).getJSONObject("props").getJSONObject("pageProps").getJSONObject("data")
         
