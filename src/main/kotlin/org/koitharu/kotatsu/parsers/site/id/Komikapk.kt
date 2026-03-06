@@ -33,42 +33,13 @@ internal class Komikapk(context: MangaLoaderContext) :
 			isMultipleTagsSupported = true,
 		)
 
-	// Genre/Tag mapping
-	private val tagsMap = mapOf(
-		"action" to "Action",
-		"adventure" to "Adventure",
-		"comedy" to "Comedy",
-		"drama" to "Drama",
-		"ecchi" to "Ecchi",
-		"fantasy" to "Fantasy",
-		"harem" to "Harem",
-		"horror" to "Horror",
-		"isekai" to "Isekai",
-		"martial-arts" to "Martial Arts",
-		"mature" to "Mature",
-		"mystery" to "Mystery",
-		"psychological" to "Psychological",
-		"romance" to "Romance",
-		"school-life" to "School Life",
-		"sci-fi" to "Sci-Fi",
-		"seinen" to "Seinen",
-		"shoujo" to "Shoujo",
-		"shounen" to "Shounen",
-		"slice-of-life" to "Slice of Life",
-		"supernatural" to "Supernatural",
-		"thriller" to "Thriller",
-		"tragedy" to "Tragedy",
-	)
-
 	override suspend fun getFilterOptions() = MangaListFilterOptions(
-		availableTags = tagsMap.map { (key, title) ->
-			MangaTag(title = title, key = key, source = source)
-		}.toSet(),
+		availableTags = emptySet(),
 		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
 		availableContentTypes = EnumSet.of(
-			MangaContentType.MANGA,
-			MangaContentType.MANHWA,
-			MangaContentType.MANHUA,
+			ContentType.MANGA,
+			ContentType.MANHWA,
+			ContentType.MANHUA,
 		),
 	)
 
@@ -85,10 +56,10 @@ internal class Komikapk(context: MangaLoaderContext) :
 		}
 
 		// Build pustaka URL
-		val type = when (filter.contentType) {
-			MangaContentType.MANGA -> "manga"
-			MangaContentType.MANHWA -> "manhwa"
-			MangaContentType.MANHUA -> "manhua"
+		val type = when (filter.types.firstOrNull()) {
+			ContentType.MANGA -> "manga"
+			ContentType.MANHWA -> "manhwa"
+			ContentType.MANHUA -> "manhua"
 			else -> "semua"
 		}
 
