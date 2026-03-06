@@ -8,6 +8,7 @@ import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
+import org.jsoup.nodes.Document
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -54,18 +55,15 @@ internal class Thrive(context: MangaLoaderContext) :
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
 		val url = when {
-			!filter.query.isNullOrEmpty() -> "https://$domain/search?q=${filter.query.urlEncoded()}"
-			filter.tags.isNotEmpty() -> "https://$domain/genre/${filter.tags.first().key}?page=$page"
+			!filter.query.isNullOrEmpty() -> "https://$domain/search?route=${filter.query.urlEncoded()}"
 			else -> if (page > 1) "https://$domain/?page=$page" else "https://$domain/"
 		}
 
 		val doc = webClient.httpGet(url).parseHtml()
 		val pageProps = doc.extractNextData().getPageProps()
 
-		// Try different array names
 		val mangaArray = pageProps.optJSONArray("terbaru")
 			?: pageProps.optJSONArray("res")
-			?: pageProps.optJSONArray("data")
 			?: return emptyList()
 
 		val mangaList = mutableListOf<Manga>()
@@ -100,13 +98,14 @@ internal class Thrive(context: MangaLoaderContext) :
 	override suspend fun getDetails(manga: Manga): Manga {
 		val doc = webClient.httpGet(manga.publicUrl).parseHtml()
 		val data = doc.extractNextData().getPageProps()
+		
 		val title = data.optStringSafe("title").ifEmpty { manga.title }
 		val cover = data.optStringSafe("image").ifEmpty { manga.coverUrl }
-		val desc = data.optJSONObject("desc")
-		val description = desc?.optStringSafe("id")
-			?: desc?.optStringSafe("en")
-			?: data.optStringSafe("desc_ID")
-			?: data.optStringSafe("desc_en")
+
+		val descObj = data.optJSONObject("desc")
+		val description = data.optStringSafe("desc_ID").ifEmpty {
+			descObj?.optStringSafe("en") ?: descObj?.optStringSafe("id")
+		}
 
 		val altTitles = data.optStringSafe("alt_title")
 			.takeIf { it.isNotBlank() }
