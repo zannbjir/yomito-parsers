@@ -1,112 +1,103 @@
 package org.koitharu.kotatsu.parsers.site.madara.id
 
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
-import org.koitharu.kotatsu.parsers.model.ContentRating
-import org.koitharu.kotatsu.parsers.model.ContentType
-import org.koitharu.kotatsu.parsers.model.Manga
-import org.koitharu.kotatsu.parsers.model.MangaChapter
-import org.koitharu.kotatsu.parsers.model.MangaListFilter
-import org.koitharu.kotatsu.parsers.model.MangaListFilterCapabilities
-import org.koitharu.kotatsu.parsers.model.MangaListFilterOptions
-import org.koitharu.kotatsu.parsers.model.MangaPage
-import org.koitharu.kotatsu.parsers.model.MangaParserSource
-import org.koitharu.kotatsu.parsers.model.MangaState
-import org.koitharu.kotatsu.parsers.model.MangaTag
-import org.koitharu.kotatsu.parsers.model.RATING_UNKNOWN
-import org.koitharu.kotatsu.parsers.model.SortOrder
-import org.koitharu.kotatsu.parsers.model.YEAR_UNKNOWN
+import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.site.madara.MadaraParser
-import org.koitharu.kotatsu.parsers.util.attrAsRelativeUrl
-import org.koitharu.kotatsu.parsers.util.generateUid
-import org.koitharu.kotatsu.parsers.util.mapChapters
-import org.koitharu.kotatsu.parsers.util.mapNotNullToSet
-import org.koitharu.kotatsu.parsers.util.parseHtml
-import org.koitharu.kotatsu.parsers.util.src
-import org.koitharu.kotatsu.parsers.util.textOrNull
-import org.koitharu.kotatsu.parsers.util.toAbsoluteUrl
-import org.koitharu.kotatsu.parsers.util.toRelativeUrl
+import org.koitharu.kotatsu.parsers.util.*
 import java.text.SimpleDateFormat
-import java.util.EnumSet
-import java.util.LinkedHashSet
-import java.util.Locale
+import java.util.*
 
 @MangaSourceParser("ROSEVEIL", "Roseveil", "id")
 internal class Roseveil(context: MangaLoaderContext) :
-	MadaraParser(context, MangaParserSource.ROSEVEIL, "roseveil.org") {
+    MadaraParser(context, MangaParserSource.ROSEVEIL, "roseveil.org") {
 
-	override val sourceLocale: Locale = Locale.US
-	override val datePattern = "MMMM dd, yyyy"
-	override val withoutAjax = true
-	override val listUrl = "comic/"
-	override val tagPrefix = "genre/"
-	override val stylePage = ""
-	override val selectTestAsync = "#lone-ch-list"
-	override val selectChapter = "#lone-ch-list li.wp-manga-chapter"
+    override val sourceLocale: Locale = Locale("id")
+    override val datePattern = "MMMM dd, yyyy"   
+    override val withoutAjax = true 
+    override val listUrl = "comic/"
+    override val selectMangaTitle = ".post-title h3 a, h3 a"
+    override val selectChapter = "#lone-ch-list li.wp-manga-chapter"
+    private val requestHeaders: Map<String, String> = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer" to "https://$domain/"
+    )
 
-	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
-		SortOrder.UPDATED,
-		SortOrder.POPULARITY,
-		SortOrder.RATING,
-		SortOrder.ALPHABETICAL,
-	)
+    override fun parseMangaList(doc: Document): List<Manga> {
+        val items = doc.select(".manga-item, article, .page-item-detail")
+        return items.mapNotNull { item ->
+            val link = item.selectFirst("h3 a, .post-title a") ?: return@mapNotNull null
+            val href = link.attrAsRelativeUrl("href")
+        
+            val title = link.text().trim()
+            
+            val cover = item.selectFirst("img")?.src() ?: ""
 
-	override val filterCapabilities: MangaListFilterCapabilities
-		get() = MangaListFilterCapabilities(
-			isSearchSupported = true,
-			isSearchWithFiltersSupported = true,
-			isYearSupported = true,
-			isAuthorSearchSupported = true,
-		)
+            Manga(
+                id = generateUid(href),
+                url = href,
+                publicUrl = href.toAbsoluteUrl(domain),
+                coverUrl = cover,
+                title = title,
+                altTitles = emptySet(),
+                rating = RATING_UNKNOWN,
+                tags = emptySet(),
+                authors = emptySet(),
+                state = null,
+                source = source,
+                contentRating = ContentRating.SAFE
+            )
+        }
+    }
 
-	override suspend fun getFilterOptions() = MangaListFilterOptions(
-		availableTags = fetchAvailableTags(),
-		availableStates = EnumSet.of(
-			MangaState.ONGOING,
-			MangaState.FINISHED,
-			MangaState.PAUSED,
-			MangaState.ABANDONED,
-		),
-		availableContentTypes = EnumSet.of(
-			ContentType.MANGA,
-			ContentType.MANHWA,
-			ContentType.MANHUA,
-			ContentType.COMICS,
-		),
-	)
+    override suspend fun getDetails(manga: Manga): Manga {
+        val response = webClient.httpGet(manga.publicUrl, requestHeaders)
+        val doc = response.parseHtml()
+        val chapters = mutableListOf<MangaChapter>()
+        doc.select(selectChapter).forEachIndexed { i, element ->
+            val link = element.selectFirst("a")
+            if (link != null) {
+                val href = link.attrAsRelativeUrl("href")
+                val name = link.text().trim()
+                chapters.add(MangaChapter(
+                    id = generateUid(href),
+                    title = name,
+                    url = href,
+                    number = name.filter { it.isDigit() || it == '.' }.toFloatOrNull() ?: (i + 1f),
+                    uploadDate = 0L,
+                    source = source,
+                    scanlator = null,
+                    branch = null,
+                    volume = 0
+                ))
+            }
+        }
 
-	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		val pageNumber = page + 1
-		val base = buildString {
-			append("https://")
-			append(domain)
-			append('/')
-			append(listUrl)
-			if (pageNumber > 1) {
-				append("page/")
-				append(pageNumber)
-				append('/')
-			}
-		}
-		val url = base.toHttpUrl().newBuilder().apply {
-			addQueryParameter("manga_order", order.toRoseveilOrder())
+        return manga.copy(
+            title = doc.selectFirst("h1.text-4xl, .post-title h1")?.text() ?: manga.title,
+            description = doc.select(".tab-panel#panel-synopsis .prose, .description-summary").text().trim(),
+            chapters = chapters.reversed(), // Biasanya chapter terbaru di atas, kita balik
+            state = if (doc.text().contains("Ongoing", true)) MangaState.ONGOING else MangaState.FINISHED
+        )
+    }
 
-			filter.query?.takeIf { it.isNotBlank() }?.let {
-				addQueryParameter("manga_search", it)
-			}
-			if (filter.year != YEAR_UNKNOWN) {
-				addQueryParameter("release", filter.year.toString())
-			}
-
-			filter.states.firstOrNull()?.toRoseveilStatus()?.let {
-				addQueryParameter("manga_status", it)
-			}
-			filter.types.firstOrNull()?.toRoseveilType()?.let {
-				addQueryParameter("manga_type", it)
-			}
+    override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+        val response = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), requestHeaders)
+        val doc = response.parseHtml()
+        
+        return doc.select(".reading-content img, .page-break img").mapNotNull { img ->
+            val url = img.src() ?: return@mapNotNull null
+            MangaPage(
+                id = generateUid(url),
+                url = url,
+                preview = null,
+                source = source
+            )
+        }
+    }
+}
 			filter.author?.takeIf { it.isNotBlank() }?.let {
 				addQueryParameter("manga_author", it)
 			}
