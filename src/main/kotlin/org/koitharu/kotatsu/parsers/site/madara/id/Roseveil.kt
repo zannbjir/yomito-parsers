@@ -1,6 +1,5 @@
 package org.koitharu.kotatsu.parsers.site.madara.id
 
-import okhttp3.Headers.Companion.toHeaders
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -48,12 +47,6 @@ internal class Roseveil(context: MangaLoaderContext) :
 	override val selectTestAsync = "#lone-ch-list"
 	override val selectChapter = "#lone-ch-list li.wp-manga-chapter"
 
-	// Fix 403: User-Agent browser wajib agar konten muncul
-	private val userAgentHeaders = mapOf(
-		"User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-		"Referer" to "https://roseveil.org/"
-	).toHeaders()
-
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.UPDATED,
 		SortOrder.POPULARITY,
@@ -100,23 +93,38 @@ internal class Roseveil(context: MangaLoaderContext) :
 		}
 		val url = base.toHttpUrl().newBuilder().apply {
 			addQueryParameter("manga_order", order.toRoseveilOrder())
-			filter.query?.takeIf { it.isNotBlank() }?.let { addQueryParameter("manga_search", it) }
-			if (filter.year != YEAR_UNKNOWN) { addQueryParameter("release", filter.year.toString()) }
-			filter.states.firstOrNull()?.toRoseveilStatus()?.let { addQueryParameter("manga_status", it) }
-			filter.types.firstOrNull()?.toRoseveilType()?.let { addQueryParameter("manga_type", it) }
-			filter.author?.takeIf { it.isNotBlank() }?.let { addQueryParameter("manga_author", it) }
+
+			filter.query?.takeIf { it.isNotBlank() }?.let {
+				addQueryParameter("manga_search", it)
+			}
+			if (filter.year != YEAR_UNKNOWN) {
+				addQueryParameter("release", filter.year.toString())
+			}
+
+			filter.states.firstOrNull()?.toRoseveilStatus()?.let {
+				addQueryParameter("manga_status", it)
+			}
+			filter.types.firstOrNull()?.toRoseveilType()?.let {
+				addQueryParameter("manga_type", it)
+			}
+			filter.author?.takeIf { it.isNotBlank() }?.let {
+				addQueryParameter("manga_author", it)
+			}
 
 			filter.tags.firstOrNull()?.let { tag ->
 				when {
 					tag.key.startsWith(TAG_PREFIX) -> addQueryParameter("manga_tag", tag.key.removePrefix(TAG_PREFIX))
-					tag.key.startsWith(GENRE_PREFIX) -> addQueryParameter("manga_genre", tag.key.removePrefix(GENRE_PREFIX))
+					tag.key.startsWith(GENRE_PREFIX) -> addQueryParameter(
+						"manga_genre",
+						tag.key.removePrefix(GENRE_PREFIX),
+					)
+
 					else -> addQueryParameter("manga_genre", tag.key)
 				}
 			}
 		}.build()
 
-		// Fix 403: Tambahkan headers
-		return parseMangaList(webClient.httpGet(url, userAgentHeaders).parseHtml())
+		return parseMangaList(webClient.httpGet(url).parseHtml())
 	}
 
 	override fun parseMangaList(doc: Document): List<Manga> {
@@ -125,7 +133,6 @@ internal class Roseveil(context: MangaLoaderContext) :
 			return super.parseMangaList(doc)
 		}
 		return items.mapNotNull { item ->
-			// Fix Judul Angka: Selector dipersempit ke h3 a
 			val link = item.selectFirst("h3 a") ?: item.selectFirst("a") ?: return@mapNotNull null
 			val href = link.attrAsRelativeUrl("href")
 			val title = link.text().trim().ifEmpty {
@@ -149,8 +156,7 @@ internal class Roseveil(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getDetails(manga: Manga): Manga {
-		// Fix 403: Tambahkan headers
-		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain), userAgentHeaders).parseHtml()
+		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
 		val href = doc.selectFirst("head meta[property='og:url']")
 			?.attr("content")
 			?.toRelativeUrl(domain)
@@ -173,22 +179,47 @@ internal class Roseveil(context: MangaLoaderContext) :
 			.toSet()
 
 		val tags = LinkedHashSet<MangaTag>()
-		doc.select("a[href*='manga_genre='], a[href*='manga_tag='], a[href*='/genre/'], .genres-content a, .tags-content a").forEach { a ->
+		doc.select(
+			"a[href*='manga_genre='], a[href*='manga_tag='], a[href*='/genre/'], .genres-content a, .tags-content a",
+		).forEach { a ->
 			parseTag(a)?.let(tags::add)
 		}
+
+		doc.selectFirst(".flex:has(.fa-text-width) .inline-block")
+			?.textOrNull()
+			?.trim()
+			?.takeIf { it.isNotEmpty() }
+			?.let {
+				tags.add(
+					MangaTag(
+						key = "type:$it",
+						title = it,
+						source = source,
+					),
+				)
+			}
 
 		return manga.copy(
 			title = doc.selectFirst("h1.text-4xl, h1")?.textOrNull() ?: manga.title,
 			url = href,
 			publicUrl = href.toAbsoluteUrl(domain),
 			coverUrl = doc.selectFirst("div.lg\\:col-span-3 img.wp-post-image, .summary_image img")?.src() ?: manga.coverUrl,
-			description = doc.selectFirst(".tab-panel#panel-synopsis .prose")?.html() ?: doc.select(selectDesc).html(),
-			authors = doc.select("a[href*='/author/']").eachText().map(String::trim).filter { it.isNotEmpty() }.toSet(),
+			description = doc.selectFirst(".tab-panel#panel-synopsis .prose")?.html()
+				?: doc.select(selectDesc).html(),
+			authors = doc.select("a[href*='/author/']")
+				.eachText()
+				.map(String::trim)
+				.filter { it.isNotEmpty() }
+				.toSet(),
 			altTitles = altTitles,
 			tags = tags,
 			state = parseState(doc.selectFirst(".tw-status-badge .tw-label")?.text()),
 			chapters = parseChapters(chapterElements),
-			contentRating = if (doc.selectFirst(".adult-confirm") != null || isNsfwSource) ContentRating.ADULT else ContentRating.SAFE,
+			contentRating = if (doc.selectFirst(".adult-confirm") != null || isNsfwSource) {
+				ContentRating.ADULT
+			} else {
+				ContentRating.SAFE
+			},
 		)
 	}
 
@@ -201,8 +232,7 @@ internal class Roseveil(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		// Fix 403: Tambahkan headers
-		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), userAgentHeaders).parseHtml()
+		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
 		val images = doc.select(".reading-content .page-break img")
 		if (images.isEmpty()) {
 			return super.getPages(chapter)
@@ -219,25 +249,45 @@ internal class Roseveil(context: MangaLoaderContext) :
 	}
 
 	override suspend fun fetchAvailableTags(): Set<MangaTag> {
-		// Fix 403: Tambahkan headers
-		val doc = webClient.httpGet("https://$domain/$listUrl", userAgentHeaders).parseHtml()
+		val doc = webClient.httpGet("https://$domain/$listUrl").parseHtml()
 		val genres = doc.select("select[name='manga_genre'] option")
 		val tags = doc.select("select[name='manga_tag'] option")
 
 		val result = LinkedHashSet<MangaTag>(genres.size + tags.size)
+
 		genres.mapNotNullToSet { option ->
 			val key = option.attr("value").trim()
 			val title = option.text().trim()
-			if (key.isEmpty() || title.isEmpty()) null else MangaTag(key = GENRE_PREFIX + key, title = title, source = source)
+			if (key.isEmpty() || title.isEmpty()) {
+				null
+			} else {
+				MangaTag(
+					key = GENRE_PREFIX + key,
+					title = title,
+					source = source,
+				)
+			}
 		}.forEach(result::add)
 
 		tags.mapNotNullToSet { option ->
 			val key = option.attr("value").trim()
 			val title = option.text().trim()
-			if (key.isEmpty() || title.isEmpty()) null else MangaTag(key = TAG_PREFIX + key, title = title, source = source)
+			if (key.isEmpty() || title.isEmpty()) {
+				null
+			} else {
+				MangaTag(
+					key = TAG_PREFIX + key,
+					title = title,
+					source = source,
+				)
+			}
 		}.forEach(result::add)
 
-		return if (result.isNotEmpty()) result else super.fetchAvailableTags()
+		return if (result.isNotEmpty()) {
+			result
+		} else {
+			super.fetchAvailableTags()
+		}
 	}
 
 	private fun parseChapters(elements: List<Element>): List<MangaChapter> {
@@ -245,7 +295,10 @@ internal class Roseveil(context: MangaLoaderContext) :
 		return elements.mapChapters(reversed = true) { i, element ->
 			val link = element.selectFirst("a") ?: return@mapChapters null
 			val href = link.attrAsRelativeUrl("href")
-			val name = link.selectFirst("h3")?.textOrNull() ?: link.textOrNull() ?: return@mapChapters null
+			val name = link.selectFirst("h3")?.textOrNull()
+				?: link.textOrNull()
+				?: return@mapChapters null
+
 			val chapterNumber = CHAPTER_NUMBER_REGEX.find(name)?.value?.toFloatOrNull()
 
 			MangaChapter(
@@ -265,24 +318,38 @@ internal class Roseveil(context: MangaLoaderContext) :
 	private suspend fun loadChapterElements(mangaUrl: String, document: Document): List<Element> {
 		val doc = if (postReq) {
 			val mangaId = document.select("div#manga-chapters-holder").attr("data-id")
-			webClient.httpPost("https://$domain/wp-admin/admin-ajax.php", "$postDataReq$mangaId", headers = userAgentHeaders).parseHtml()
+			webClient.httpPost(
+				"https://$domain/wp-admin/admin-ajax.php",
+				"$postDataReq$mangaId",
+			).parseHtml()
 		} else {
-			webClient.httpPost(mangaUrl.toAbsoluteUrl(domain).removeSuffix("/") + "/ajax/chapters/", emptyMap<String, String>(), headers = userAgentHeaders).parseHtml()
+			webClient.httpPost(
+				mangaUrl.toAbsoluteUrl(domain).removeSuffix("/") + "/ajax/chapters/",
+				emptyMap<String, String>(),
+			).parseHtml()
 		}
 		return doc.select(selectChapter)
 	}
 
 	private fun parseTag(a: Element): MangaTag? {
 		val title = a.text().trim()
-		if (title.isEmpty()) return null
+		if (title.isEmpty()) {
+			return null
+		}
 		val href = a.attr("href")
 		val key = when {
 			"manga_tag=" in href -> TAG_PREFIX + href.substringAfter("manga_tag=").substringBefore("&").substringBefore("#")
-			"manga_genre=" in href -> GENRE_PREFIX + href.substringAfter("manga_genre=").substringBefore("&").substringBefore("#")
+			"manga_genre=" in href -> GENRE_PREFIX + href.substringAfter("manga_genre=").substringBefore("&")
+				.substringBefore("#")
+
 			"/genre/" in href -> GENRE_PREFIX + href.removeSuffix("/").substringAfterLast("/")
 			else -> href.removeSuffix("/").substringAfterLast("/").ifEmpty { title.lowercase(sourceLocale) }
 		}
-		return MangaTag(key = key, title = title, source = source)
+		return MangaTag(
+			key = key,
+			title = title,
+			source = source,
+		)
 	}
 
 	private fun parseState(text: String?): MangaState? = when (text?.trim()?.lowercase(sourceLocale).orEmpty()) {
@@ -324,4 +391,3 @@ internal class Roseveil(context: MangaLoaderContext) :
 		private val CHAPTER_NUMBER_REGEX = Regex("""\d+(?:\.\d+)?""")
 	}
 }
-
