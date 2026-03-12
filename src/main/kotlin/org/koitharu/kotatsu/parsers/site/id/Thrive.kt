@@ -14,10 +14,14 @@ import java.util.*
 
 @MangaSourceParser("THRIVE", "Thrive", "id")
 internal class Thrive(context: MangaLoaderContext) :
-    PagedMangaParser(context, MangaParserSource.THRIVE, 20) {
+    PagedMangaParser(context, MangaParserSource.THRIVE, pageSize = 20) {
 
     override val configKeyDomain = ConfigKey.Domain("thrive.moe")
     
+    override val availableSortOrders: Set<SortOrder> = EnumSet.of(SortOrder.NEWEST)
+    override val filterCapabilities = MangaListFilterCapabilities(isSearchSupported = true)
+    override suspend fun getFilterOptions(): MangaListFilterOptions = MangaListFilterOptions()
+
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Referer" to "https://thrive.moe/"
@@ -31,28 +35,39 @@ internal class Thrive(context: MangaLoaderContext) :
         }
 
         val doc = webClient.httpGet(url, headers).parseHtml()
-        val nextData = JSONObject(doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return emptyList())
+        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return emptyList()
+        val nextData = JSONObject(scriptData)
         val pageProps = nextData.getJSONObject("props").getJSONObject("pageProps")
-        
         val mangaArray = pageProps.optJSONArray("terbaru") ?: pageProps.optJSONArray("res") ?: return emptyList()
 
-        return (0 until mangaArray.length()).mapNotNull { i ->
+        val mangaList = mutableListOf<Manga>()
+        for (i in 0 until mangaArray.length()) {
             val jo = mangaArray.getJSONObject(i)
-            val id = jo.optString("id").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            Manga(
+            val id = jo.optString("id")
+            if (id.isEmpty()) continue
+
+            mangaList.add(Manga(
                 id = generateUid(id),
+                title = jo.optString("title", "Untitled"),
+                altTitles = emptySet(),
                 url = "/title/$id",
                 publicUrl = "https://$domain/title/$id",
-                title = jo.optString("title", "Untitled"),
+                rating = RATING_UNKNOWN,
+                contentRating = ContentRating.SAFE,
                 coverUrl = jo.optString("cover"),
+                tags = emptySet(),
+                state = null,
+                authors = emptySet(),
                 source = source
-            )
+            ))
         }
+        return mangaList
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl, headers).parseHtml()
-        val data = JSONObject(doc.selectFirst("script#__NEXT_DATA__")?.data() ?: "").getJSONObject("props").getJSONObject("pageProps")
+        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return manga
+        val data = JSONObject(scriptData).getJSONObject("props").getJSONObject("pageProps")
 
         val chapters = mutableListOf<MangaChapter>()
         data.optJSONArray("chapterlist")?.let { arr ->
@@ -65,7 +80,10 @@ internal class Thrive(context: MangaLoaderContext) :
                     url = "/read/$chId",
                     number = ch.optString("chapter_number").toFloatOrNull() ?: 0f,
                     uploadDate = parseDate(ch.optString("created_at")),
-                    source = source
+                    source = source,
+                    scanlator = ch.optString("scanlator"),
+                    branch = null,
+                    volume = 0
                 ))
             }
         }
@@ -79,7 +97,8 @@ internal class Thrive(context: MangaLoaderContext) :
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val doc = webClient.httpGet("https://$domain${chapter.url}", headers).parseHtml()
-        val data = JSONObject(doc.selectFirst("script#__NEXT_DATA__")?.data() ?: "").getJSONObject("props").getJSONObject("pageProps")
+        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return emptyList()
+        val data = JSONObject(scriptData).getJSONObject("props").getJSONObject("pageProps")
         
         val prefix = data.optString("prefix")
         val images = data.getJSONArray("image")
