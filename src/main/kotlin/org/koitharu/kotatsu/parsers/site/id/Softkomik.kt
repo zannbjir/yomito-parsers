@@ -33,6 +33,8 @@ internal class Softkomik(context: MangaLoaderContext) :
         isSearchWithFiltersSupported = true
     )
 
+    override suspend fun getFilterOptions(): MangaListFilterOptions = MangaListFilterOptions()
+
     private val apiHeaders = mapOf(
         "Accept" to "application/json",
         "Origin" to "https://softkomik.co",
@@ -52,37 +54,43 @@ internal class Softkomik(context: MangaLoaderContext) :
             }
         }.build()
 
-        val json = webClient.httpGet(url, apiHeaders).parseJson().optJSONObject("data") ?: return emptyList()
-        val data = if (json.has("data")) json.getJSONArray("data") else return emptyList()
+        val jsonResponse = webClient.httpGet(url, apiHeaders).parseJson()
+        val data = jsonResponse.optJSONObject("data")?.optJSONArray("data") ?: return emptyList()
 
-        return (0 until data.length()).map { i ->
+        val mangaList = mutableListOf<Manga>()
+        for (i in 0 until data.length()) {
             val jo = data.getJSONObject(i)
             val slug = jo.getString("title_slug")
             val img = jo.getString("gambar").removePrefix("/")
 
-            Manga(
+            mangaList.add(Manga(
                 id = generateUid(slug),
                 title = jo.getString("title").trim(),
+                altTitles = emptySet(),
                 url = slug,
                 publicUrl = "https://$domain/komik/$slug",
+                rating = RATING_UNKNOWN,
+                contentRating = ContentRating.SAFE,
                 coverUrl = "$coverCdn/$img",
-                source = source,
-                state = if (jo.optString("status").contains("Ongoing", true)) MangaState.ONGOING else MangaState.FINISHED
-            )
+                tags = emptySet(),
+                state = if (jo.optString("status").contains("Ongoing", true)) MangaState.ONGOING else MangaState.FINISHED,
+                authors = emptySet(),
+                source = source
+            ))
         }
+        return mangaList
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
         val detailJson = webClient.httpGet("$apiUrl/komik/${manga.url}", apiHeaders).parseJson().optJSONObject("data") ?: return manga
-        
-        val chaptersArray = webClient.httpGet("$apiUrl/komik/${manga.url}/chapter?limit=9999", apiHeaders)
-            .parseJson().optJSONArray("chapter") ?: JSONArray()
+        val chapterUrl = "$apiUrl/komik/${manga.url}/chapter?limit=9999"
+        val chaptersArray = webClient.httpGet(chapterUrl, apiHeaders).parseJson().optJSONArray("chapter") ?: JSONArray()
 
         val tags = mutableSetOf<MangaTag>()
         detailJson.optJSONArray("Genre")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val name = arr.getString(i)
-                tags.add(MangaTag(name, name.lowercase().replace(" ", "-"), source))
+                tags.add(MangaTag(name.lowercase().replace(" ", "-"), name, source))
             }
         }
 
@@ -94,7 +102,11 @@ internal class Softkomik(context: MangaLoaderContext) :
                 title = "Chapter $chNum",
                 url = "/komik/${manga.url}/chapter/$chNum",
                 number = chNum.toFloatOrNull() ?: 0f,
-                source = source
+                uploadDate = 0L,
+                source = source,
+                scanlator = null,
+                branch = null,
+                volume = 0
             )
         }
 
@@ -108,11 +120,10 @@ internal class Softkomik(context: MangaLoaderContext) :
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val doc = webClient.httpGet("https://$domain${chapter.url}", apiHeaders).parseHtml()
-        val nextData = doc.selectFirst("script#__NEXT_DATA__")?.data()?.let { JSONObject(it) }
-        
-        val props = nextData?.getJSONObject("props")?.getJSONObject("pageProps")
-        val data = props?.optJSONObject("data") ?: props ?: return emptyList()
-        
+        val nextData = doc.selectFirst("script#__NEXT_DATA__")?.data()?.let { JSONObject(it) } ?: return emptyList()
+        val props = nextData.getJSONObject("props").getJSONObject("pageProps")
+        val data = props.optJSONObject("data") ?: props
+
         val images = data.optJSONArray("imageSrc") ?: return emptyList()
         val host = if (data.optBoolean("storageInter2")) cdnUrls[2] else cdnUrls[0]
 
