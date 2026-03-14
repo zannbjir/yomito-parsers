@@ -1,5 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.madara.id
 
+import okhttp3.FormBody
 import okhttp3.Headers.Companion.toHeaders
 import org.jsoup.nodes.Document
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -11,10 +12,10 @@ import java.util.*
 
 @MangaSourceParser("KAGUYA", "Kaguya", "id")
 internal class Kaguya(context: MangaLoaderContext) :
-    MadaraParser(context, MangaParserSource.KAGUYA, "v1.kaguya.pro") {
+    MadaraParser(context, MangaParserSource.KAGUYA, "01.kaguya.pro") {
 
     override val sourceLocale: Locale = Locale("id")
-    override val datePattern = "d MMMM"
+    override val datePattern = "d MMMM" 
     
     override val withoutAjax = false 
     override val listUrl = "all-series/"
@@ -64,21 +65,28 @@ internal class Kaguya(context: MangaLoaderContext) :
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl, commonHeaders).parseHtml()
         
-        // Logic khusus Kaguya: Chapter diload via AJAX POST secara rekursif/looping
         val chapters = mutableListOf<MangaChapter>()
         var page = 1
         while (true) {
-            val ajaxUrl = "${manga.publicUrl.removeSuffix("/")}/ajax/chapters?t=${page++}"
-            val response = webClient.httpPost(ajaxUrl, "".toPayload(), commonHeaders).parseHtml()
-            val currentPageChapters = response.select("li.wp-manga-chapter").map { element ->
+            val ajaxUrl = "https://$domain${manga.url.removeSuffix("/")}/ajax/chapters?t=${page++}"
+            
+            val requestBody = FormBody.Builder().build()
+            val response = webClient.httpPost(ajaxUrl, requestBody, commonHeaders).parseHtml()
+            
+            val chapterElements = response.select("li.wp-manga-chapter")
+            if (chapterElements.isEmpty()) break
+
+            val currentPageChapters = chapterElements.map { element ->
                 val link = element.selectFirst("a")!!
                 val href = link.attrAsRelativeUrl("href")
+                val title = link.text().trim()
+                
                 MangaChapter(
                     id = generateUid(href),
-                    title = link.text().trim(),
+                    title = title,
                     url = href,
-                    number = parseChapterNumber(link.text()),
-                    uploadDate = parseChapterDate(element.selectFirst(".chapter-release-date")?.text()),
+                    number = title.filter { it.isDigit() || it == '.' }.toFloatOrNull() ?: 0f,
+                    uploadDate = parseChapterDate(element.selectFirst(".chapter-release-date")?.text() ?: ""),
                     source = source,
                     scanlator = null,
                     branch = null,
@@ -86,9 +94,8 @@ internal class Kaguya(context: MangaLoaderContext) :
                 )
             }
             
-            if (currentPageChapters.isEmpty()) break
             chapters.addAll(currentPageChapters)
-            if (page > 50) break 
+            if (page > 100) break
         }
 
         return manga.copy(
