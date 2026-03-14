@@ -14,13 +14,15 @@ internal class Kaguya(context: MangaLoaderContext) :
     MadaraParser(context, MangaParserSource.KAGUYA, "v1.kaguya.pro") {
 
     override val sourceLocale: Locale = Locale("id")
-    override val datePattern = "MMMM dd, yyyy"
+    override val datePattern = "d MMMM"
     
     override val withoutAjax = false 
     override val listUrl = "all-series/"
-    private val headers = mapOf(
+
+    private val commonHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer" to "https://$domain/"
+        "Referer" to "https://$domain/",
+        "X-Requested-With" to "XMLHttpRequest"
     ).toHeaders()
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
@@ -30,7 +32,7 @@ internal class Kaguya(context: MangaLoaderContext) :
             append("?m_orderby=")
             append(if (order == SortOrder.POPULARITY) "views" else "latest")
         }
-        return parseMangaList(webClient.httpGet(url, headers).parseHtml())
+        return parseMangaList(webClient.httpGet(url, commonHeaders).parseHtml())
     }
 
     override fun parseMangaList(doc: Document): List<Manga> {
@@ -38,11 +40,15 @@ internal class Kaguya(context: MangaLoaderContext) :
             val link = item.selectFirst(".post-title a, h3 a") ?: return@mapNotNull null
             val href = link.attrAsRelativeUrl("href")
             
+            val coverUrl = item.selectFirst("img")?.src() 
+                ?: doc.selectFirst("head meta[property='og:image']")?.attr("content")
+                ?: ""
+
             Manga(
                 id = generateUid(href),
                 url = href,
                 publicUrl = href.toAbsoluteUrl(domain),
-                coverUrl = item.selectFirst("img")?.src() ?: "",
+                coverUrl = coverUrl,
                 title = link.text().trim(),
                 altTitles = emptySet(),
                 rating = RATING_UNKNOWN,
@@ -56,9 +62,34 @@ internal class Kaguya(context: MangaLoaderContext) :
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
-        val doc = webClient.httpGet(manga.publicUrl, headers).parseHtml()
+        val doc = webClient.httpGet(manga.publicUrl, commonHeaders).parseHtml()
         
-        val chapters = loadChapters(manga.url, doc)
+        // Logic khusus Kaguya: Chapter diload via AJAX POST secara rekursif/looping
+        val chapters = mutableListOf<MangaChapter>()
+        var page = 1
+        while (true) {
+            val ajaxUrl = "${manga.publicUrl.removeSuffix("/")}/ajax/chapters?t=${page++}"
+            val response = webClient.httpPost(ajaxUrl, "".toPayload(), commonHeaders).parseHtml()
+            val currentPageChapters = response.select("li.wp-manga-chapter").map { element ->
+                val link = element.selectFirst("a")!!
+                val href = link.attrAsRelativeUrl("href")
+                MangaChapter(
+                    id = generateUid(href),
+                    title = link.text().trim(),
+                    url = href,
+                    number = parseChapterNumber(link.text()),
+                    uploadDate = parseChapterDate(element.selectFirst(".chapter-release-date")?.text()),
+                    source = source,
+                    scanlator = null,
+                    branch = null,
+                    volume = 0
+                )
+            }
+            
+            if (currentPageChapters.isEmpty()) break
+            chapters.addAll(currentPageChapters)
+            if (page > 50) break 
+        }
 
         return manga.copy(
             description = doc.select(".description-summary, .manga-excerpt, .summary__content").text().trim(),
@@ -75,14 +106,16 @@ internal class Kaguya(context: MangaLoaderContext) :
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), headers).parseHtml()
+        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), commonHeaders).parseHtml()
         
         return doc.select(".page-break img, .reading-content img").mapNotNull { element ->
             val imageUrl = if (element.hasAttr("data-aesir")) {
                 try {
-                    val decoded = java.util.Base64.getDecoder().decode(element.attr("data-aesir").trim())
-                    String(decoded)
-                } catch (e: Exception) { element.src() }
+                    val base64Data = element.attr("data-aesir").trim()
+                    String(java.util.Base64.getDecoder().decode(base64Data))
+                } catch (e: Exception) {
+                    element.src()
+                }
             } else {
                 element.src()
             } ?: return@mapNotNull null
