@@ -204,7 +204,9 @@ internal class StoneScape(context: MangaLoaderContext) :
 			val url = "/series/$slug/$chapterSlug#$chapterId"
 			val number = chapterNumber.toFloatOrNull()
 				?: chapter.optDouble("number", (i + 1).toDouble()).toFloat()
-			val title = chapter.optString("title").nullIfEmpty()
+			val title = chapter.optString("title")
+				.takeUnless { it.equals("null", ignoreCase = true) }
+				?.nullIfEmpty()
 			MangaChapter(
 				id = generateUid(url),
 				title = when {
@@ -224,7 +226,7 @@ internal class StoneScape(context: MangaLoaderContext) :
 				branch = null,
 				source = source,
 			)
-		}.reversed()
+		}
 	}
 
 	private suspend fun fetchGenres(): Set<MangaTag> {
