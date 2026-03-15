@@ -28,7 +28,7 @@ internal class YuriLab(context: MangaLoaderContext) :
             val value = it.attrAsRelativeUrl("href").removeSuffix("/").substringAfterLast("/")
             
             if (name.isNotBlank() && value.isNotBlank()) {
-                MangaListFilterOptions.Tag(name, value)
+                MangaTag(title = name, key = value, source = source)
             } else {
                 null
             }
