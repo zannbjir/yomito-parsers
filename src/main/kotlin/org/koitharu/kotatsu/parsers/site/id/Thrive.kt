@@ -8,6 +8,7 @@ import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
+import org.koitharu.kotatsu.parsers.model.RATING_UNKNOWN
 import org.koitharu.kotatsu.parsers.util.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -59,10 +60,10 @@ internal class Thrive(context: MangaLoaderContext) :
         val mangaList = mutableListOf<Manga>()
         for (i in 0 until mangaArray.length()) {
             val jo = mangaArray.getJSONObject(i)
-            val id = jo.optString("id")
+            val id = jo.optString("id", "")
             if (id.isEmpty()) continue
 
-            var coverUrl = jo.optString("cover")
+            var coverUrl = jo.optString("cover", "")
             if (coverUrl.isNotEmpty() && !coverUrl.startsWith("http")) {
                 coverUrl = "https://cdn.thrive.moe/covers/$id/$coverUrl.256.jpg"
             }
@@ -73,7 +74,7 @@ internal class Thrive(context: MangaLoaderContext) :
                 altTitles = emptySet(),
                 url = "/title/$id",
                 publicUrl = "https://$domain/title/$id",
-                rating = Manga.RATING_UNKNOWN,
+                rating = RATING_UNKNOWN,
                 contentRating = ContentRating.SAFE,
                 coverUrl = coverUrl,
                 tags = emptySet(),
@@ -97,30 +98,31 @@ internal class Thrive(context: MangaLoaderContext) :
         chaptersArray?.let { arr ->
             for (i in 0 until arr.length()) {
                 val ch = arr.getJSONObject(i)
-                val chId = ch.optString("chapter_id").ifEmpty { ch.optString("id") }
+                val chId = ch.optString("chapter_id", "").ifEmpty { ch.optString("id", "") }
                 if (chId.isEmpty()) continue
+                
+                val chTitle = ch.optString("chapter_title", "")
+                val chNum = ch.optString("chapter_number", "")
                 
                 chapters.add(MangaChapter(
                     id = generateUid(chId),
-                    title = ch.optString("chapter_title").ifEmpty { "Chapter ${ch.optString("chapter_number")}" },
+                    title = if (chTitle.isNotEmpty()) chTitle else "Chapter $chNum",
                     url = "/read/$chId",
-                    number = ch.optString("chapter_number").toFloatOrNull() ?: 0f,
-                    uploadDate = parseDate(ch.optString("created_at")),
+                    number = chNum.toFloatOrNull() ?: 0f,
+                    uploadDate = parseDate(ch.optString("created_at", "")),
                     source = source,
-                    scanlator = ch.optString("scanlator"),
+                    scanlator = ch.optString("scanlator", ""),
                     branch = null,
                     volume = 0
                 ))
             }
         }
 
-        val description = mangaObj.optString("desc_ID").ifEmpty { 
-            mangaObj.optJSONObject("desc")?.optString("id") 
-        }.ifEmpty { 
-            mangaObj.optString("description") 
-        }
-
-        val stateStr = mangaObj.optString("status")
+        val descId = mangaObj.optString("desc_ID", "")
+        val descObjId = mangaObj.optJSONObject("desc")?.optString("id", "") ?: ""
+        val descFallback = mangaObj.optString("description", "")
+        val description = if (descId.isNotEmpty()) descId else if (descObjId.isNotEmpty()) descObjId else descFallback
+        val stateStr = mangaObj.optString("status", "")
         val state = if (stateStr.contains("completed", true) || stateStr.contains("tamat", true)) {
             MangaState.FINISHED 
         } else {
@@ -130,22 +132,29 @@ internal class Thrive(context: MangaLoaderContext) :
         val tags = mutableSetOf<MangaTag>()
         mangaObj.optJSONArray("tags")?.let { arr ->
             for (i in 0 until arr.length()) {
-                val tName = arr.optString(i)
+                val tName = arr.optString(i, "")
                 if (tName.isNotBlank()) tags.add(MangaTag(tName, tName, source))
             }
         }
         
         val authors = mutableSetOf<String>()
-        mangaObj.optString("author").takeIf { it.isNotBlank() }?.let { authors.add(it) }
-        mangaObj.optString("artist").takeIf { it.isNotBlank() }?.let { authors.add(it) }
+        val author = mangaObj.optString("author", "")
+        if (author.isNotBlank()) authors.add(author)
+        val artist = mangaObj.optString("artist", "")
+        if (artist.isNotBlank()) authors.add(artist)
 
-        var cover = mangaObj.optString("cover").ifEmpty { manga.coverUrl }
+        var cover = mangaObj.optString("cover", "")
+        if (cover.isEmpty()) {
+            cover = manga.coverUrl ?: ""
+        }
         if (cover.isNotEmpty() && !cover.startsWith("http")) {
             cover = "https://cdn.thrive.moe/covers/${manga.url.substringAfterLast("/")}/$cover.256.jpg"
         }
 
+        val title = mangaObj.optString("title", "")
+
         return manga.copy(
-            title = mangaObj.optString("title").ifEmpty { manga.title },
+            title = if (title.isNotEmpty()) title else manga.title,
             description = description,
             state = state,
             authors = authors,
@@ -161,7 +170,7 @@ internal class Thrive(context: MangaLoaderContext) :
         val pageProps = JSONObject(scriptData).optJSONObject("props")?.optJSONObject("pageProps") ?: return emptyList()
         
         val pagesObj = findPagesObject(pageProps) ?: pageProps
-        val prefix = pagesObj.optString("prefix")
+        val prefix = pagesObj.optString("prefix", "")
         val images = pagesObj.optJSONArray("image") ?: pagesObj.optJSONArray("images") ?: return emptyList()
 
         return (0 until images.length()).map { i ->
