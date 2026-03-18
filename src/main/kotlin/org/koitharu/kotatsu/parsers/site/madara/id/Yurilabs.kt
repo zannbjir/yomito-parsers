@@ -1,5 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.madara.id
 
+import okhttp3.Headers.Companion.toHeaders
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.model.*
@@ -67,9 +68,13 @@ internal class Yurilabs(context: MangaLoaderContext) :
         
         if (!mangaId.isNullOrEmpty()) {
             val formBody = okhttp3.FormBody.Builder().add("action", "manga_get_chapters").add("manga", mangaId).build()
-            val xhrHeaders = headers.newBuilder().add("X-Requested-With", "XMLHttpRequest").build()
-            val ajaxDocs = webClient.httpPost("https://$domain/wp-admin/admin-ajax.php", formBody, xhrHeaders).parseHtml()
             
+            val xhrHeaders = mapOf(
+                "X-Requested-With" to "XMLHttpRequest",
+                "Referer" to publicUrl
+            ).toHeaders()
+            
+            val ajaxDocs = webClient.httpPost("https://$domain/wp-admin/admin-ajax.php", formBody, xhrHeaders).parseHtml()
             allChapters.addAll(parseChapters(ajaxDocs))
             
             val pagination = ajaxDocs.selectFirst("div.pagination")
@@ -94,7 +99,18 @@ internal class Yurilabs(context: MangaLoaderContext) :
             val title = a.text().trim()
             val dateText = node.selectFirst("span.chapter-release-date i")?.text()?.trim() ?: ""
             val numMatch = Regex("""[0-9]+(\.[0-9]+)?""").findAll(title).lastOrNull()?.value
-            MangaChapter(generateUid(url), title, url, numMatch?.toFloatOrNull() ?: 0f, parseDate(dateText), source, "", null, 0)
+            
+            MangaChapter(
+                id = generateUid(url),
+                title = title,
+                url = url,
+                number = numMatch?.toFloatOrNull() ?: 0f,
+                uploadDate = parseDate(dateText),
+                source = source,
+                scanlator = "",
+                branch = null,
+                volume = 0
+            )
         }
     }
 
