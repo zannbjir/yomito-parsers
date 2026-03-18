@@ -93,54 +93,63 @@ internal class Kaguya(context: MangaLoaderContext) :
         }
 
         val allChapters = mutableListOf<MangaChapter>()
-        var currentPage = 1
-        var hasNextPage = true
         
-        while (hasNextPage) {
-            val pageUrl = "$publicUrl?t=$currentPage"
-            val pageDocs = webClient.httpGet(pageUrl).parseHtml()
-            
-            val chapterNodes = pageDocs.select("li.wp-manga-chapter")
-            
-            if (chapterNodes.isEmpty()) {
-                hasNextPage = false
-            } else {
-                for (node in chapterNodes) {
-                    val a = node.selectFirst("a") ?: continue
-                    val url = a.attrAsRelativeUrl("href")
-                    val title = a.text().trim()
-                    val dateText = node.selectFirst("span.chapter-release-date i")?.text()?.trim() ?: ""
+        val initialChapters = docs.select("li.wp-manga-chapter")
+        for (node in initialChapters) {
+            val a = node.selectFirst("a") ?: continue
+            val url = a.attrAsRelativeUrl("href")
+            val title = a.text().trim()
+            val dateText = node.selectFirst("span.chapter-release-date i")?.text()?.trim() ?: ""
 
-                    val numMatch = Regex("""[0-9]+(\.[0-9]+)?""").findAll(title).lastOrNull()?.value
-                    val number = numMatch?.toFloatOrNull() ?: 0f
+            val numMatch = Regex("""[0-9]+(\.[0-9]+)?""").findAll(title).lastOrNull()?.value
+            val number = numMatch?.toFloatOrNull() ?: 0f
 
-                    allChapters.add(MangaChapter(
-                        id = generateUid(url),
-                        title = title,
-                        url = url,
-                        number = number,
-                        uploadDate = parseDate(dateText),
-                        source = source,
-                        scanlator = "",
-                        branch = null,
-                        volume = 0
-                    ))
-                }
-                
-                val pagination = pageDocs.selectFirst("div.pagination")
-                if (pagination != null) {
-                    val currentSpan = pagination.selectFirst("span.current")
-                    if (currentSpan?.nextElementSibling() != null && currentSpan.nextElementSibling()?.hasClass("page") == true) {
-                        currentPage++
-                    } else {
-                        hasNextPage = false
+            allChapters.add(MangaChapter(
+                id = generateUid(url),
+                title = title,
+                url = url,
+                number = number,
+                uploadDate = parseDate(dateText),
+                source = source,
+                scanlator = "",
+                branch = null,
+                volume = 0
+            ))
+        }
+
+        val pagination = docs.selectFirst("div.pagination")
+        if (pagination != null) {
+            val lastPageNode = pagination.select("a[data-page]").lastOrNull()
+            val lastPage = lastPageNode?.attr("data-page")?.toIntOrNull() ?: 1
+            
+            if (lastPage > 1) {
+                for (p in 2..lastPage) {
+                    val pageDocs = webClient.httpGet("$publicUrl?t=$p").parseHtml()
+                    val pageChapters = pageDocs.select("li.wp-manga-chapter")
+                    
+                    for (node in pageChapters) {
+                        val a = node.selectFirst("a") ?: continue
+                        val url = a.attrAsRelativeUrl("href")
+                        val title = a.text().trim()
+                        val dateText = node.selectFirst("span.chapter-release-date i")?.text()?.trim() ?: ""
+
+                        val numMatch = Regex("""[0-9]+(\.[0-9]+)?""").findAll(title).lastOrNull()?.value
+                        val number = numMatch?.toFloatOrNull() ?: 0f
+
+                        allChapters.add(MangaChapter(
+                            id = generateUid(url),
+                            title = title,
+                            url = url,
+                            number = number,
+                            uploadDate = parseDate(dateText),
+                            source = source,
+                            scanlator = "",
+                            branch = null,
+                            volume = 0
+                        ))
                     }
-                } else {
-                    hasNextPage = false
                 }
             }
-            
-            if (currentPage > 50) hasNextPage = false
         }
 
         return manga.copy(
@@ -149,7 +158,7 @@ internal class Kaguya(context: MangaLoaderContext) :
             tags = parsedTags.ifEmpty { manga.tags },
             state = state,
             coverUrl = docs.selectFirst("div.summary_image img")?.src() ?: manga.coverUrl,
-            chapters = allChapters.sortedByDescending { it.number }
+            chapters = allChapters.sortedByDescending { it.number }.distinctBy { it.url } 
         )
     }
 
@@ -175,7 +184,6 @@ internal class Kaguya(context: MangaLoaderContext) :
             }
         }
     }
-
 
     private fun parseDate(dateStr: String): Long {
         if (dateStr.isEmpty()) return 0L
