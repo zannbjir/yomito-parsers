@@ -1,6 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.madara.id
 
 import okhttp3.Headers.Companion.toHeaders
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.model.*
@@ -67,14 +68,19 @@ internal class Yurilabs(context: MangaLoaderContext) :
         val mangaId = docs.selectFirst("#manga-chapters-holder")?.attr("data-id")
         
         if (!mangaId.isNullOrEmpty()) {
-            val formBody = okhttp3.FormBody.Builder().add("action", "manga_get_chapters").add("manga", mangaId).build()
+            val formBody = mapOf(
+                "action" to "manga_get_chapters",
+                "manga" to mangaId
+            )
             
             val xhrHeaders = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to publicUrl
             ).toHeaders()
+
+            val ajaxUrl = "https://$domain/wp-admin/admin-ajax.php".toHttpUrl()
+            val ajaxDocs = webClient.httpPost(ajaxUrl, formBody, xhrHeaders).parseHtml()
             
-            val ajaxDocs = webClient.httpPost("https://$domain/wp-admin/admin-ajax.php", formBody, xhrHeaders).parseHtml()
             allChapters.addAll(parseChapters(ajaxDocs))
             
             val pagination = ajaxDocs.selectFirst("div.pagination")
