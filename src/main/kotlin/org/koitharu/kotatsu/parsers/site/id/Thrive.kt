@@ -17,12 +17,11 @@ internal class Thrive(context: MangaLoaderContext) :
     PagedMangaParser(context, MangaParserSource.THRIVE, pageSize = 20) {
 
     override val configKeyDomain = ConfigKey.Domain("thrive.moe")
-    
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(SortOrder.NEWEST)
     override val filterCapabilities = MangaListFilterCapabilities(isSearchSupported = true)
     
     private val headers = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)",
         "Referer" to "https://$domain/"
     ).toHeaders()
 
@@ -40,8 +39,7 @@ internal class Thrive(context: MangaLoaderContext) :
         val url = if (!filter.query.isNullOrEmpty()) {
             "https://$domain/search?q=${filter.query.urlEncoded()}"
         } else if (filter.tags.isNotEmpty()) {
-            val tag = filter.tags.first().key
-            "https://$domain/genre/$tag" + if (page > 0) "?page=${page + 1}" else ""
+            "https://$domain/genre/${filter.tags.first().key}" + if (page > 0) "?page=${page + 1}" else ""
         } else {
             if (page > 0) "https://$domain/?page=${page + 1}" else "https://$domain/"
         }
@@ -50,11 +48,7 @@ internal class Thrive(context: MangaLoaderContext) :
         val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return emptyList()
         val pageProps = JSONObject(scriptData).optJSONObject("props")?.optJSONObject("pageProps") ?: return emptyList()
 
-        val mangaArray = pageProps.optJSONArray("res") 
-            ?: pageProps.optJSONArray("data") 
-            ?: pageProps.optJSONArray("terbaru")
-            ?: findMangaArray(pageProps) 
-            ?: return emptyList()
+        val mangaArray = pageProps.optJSONArray("res") ?: pageProps.optJSONArray("data") ?: pageProps.optJSONArray("terbaru") ?: return emptyList()
 
         val mangaList = mutableListOf<Manga>()
         for (i in 0 until mangaArray.length()) {
@@ -64,7 +58,7 @@ internal class Thrive(context: MangaLoaderContext) :
 
             var coverUrl = jo.optString("cover", "")
             if (coverUrl.isNotEmpty() && !coverUrl.startsWith("http")) {
-                coverUrl = if (coverUrl.startsWith("/")) "https://cdn.thrive.moe$coverUrl" else "https://cdn.thrive.moe/$coverUrl"
+                coverUrl = "https://cdn.thrive.moe/" + coverUrl.removePrefix("/")
             }
 
             mangaList.add(Manga(
@@ -90,8 +84,8 @@ internal class Thrive(context: MangaLoaderContext) :
         val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return manga
         val pageProps = JSONObject(scriptData).optJSONObject("props")?.optJSONObject("pageProps") ?: return manga
 
-        val mangaObj = pageProps.optJSONObject("manga") ?: pageProps.optJSONObject("res") ?: findMangaObject(pageProps) ?: pageProps
-        val chaptersArray = pageProps.optJSONArray("chapterlist") ?: pageProps.optJSONArray("chapters") ?: findChaptersArray(pageProps)
+        val mangaObj = pageProps.optJSONObject("manga") ?: pageProps.optJSONObject("res") ?: pageProps
+        val chaptersArray = pageProps.optJSONArray("chapterlist") ?: pageProps.optJSONArray("chapters")
 
         val chapters = mutableListOf<MangaChapter>()
         chaptersArray?.let { arr ->
@@ -103,15 +97,9 @@ internal class Thrive(context: MangaLoaderContext) :
                 val chTitleRaw = ch.optString("chapter_title", "").ifEmpty { ch.optString("title", "") }
                 val chNum = ch.optString("chapter_number", "").ifEmpty { ch.optString("number", "") }
                 
-                val finalTitle = when {
-                    chTitleRaw.isNotBlank() -> chTitleRaw
-                    chNum.isNotBlank() -> "Chapter $chNum"
-                    else -> "Chapter ${arr.length() - i}"
-                }
-                
                 chapters.add(MangaChapter(
                     id = generateUid(chId),
-                    title = finalTitle,
+                    title = chTitleRaw.ifBlank { "Chapter $chNum" },
                     url = "/read/$chId",
                     number = chNum.toFloatOrNull() ?: 0f,
                     uploadDate = parseDate(ch.optString("created_at", "").ifEmpty { ch.optString("date", "") }),
@@ -123,157 +111,67 @@ internal class Thrive(context: MangaLoaderContext) :
             }
         }
 
-        val descId = mangaObj.optString("desc_ID", "")
-        val descObjId = mangaObj.optJSONObject("desc")?.optString("id", "") ?: ""
-        val descFallback = mangaObj.optString("description", "")
-        val description = if (descId.isNotEmpty()) descId else if (descObjId.isNotEmpty()) descObjId else descFallback
+        // AMBIL COVER LANGSUNG DARI HTML BIAR GAK 404
+        val htmlCover = doc.selectFirst("img[alt=cover], img.object-cover, .w-full img")?.attr("src")
+        val finalCover = htmlCover?.takeIf { it.startsWith("http") } ?: manga.coverUrl ?: ""
 
+        val desc = mangaObj.optString("description", "")
         val stateStr = mangaObj.optString("status", "")
-        val state = if (stateStr.contains("completed", true) || stateStr.contains("tamat", true)) {
-            MangaState.FINISHED 
-        } else {
-            MangaState.ONGOING
-        }
-
-        val tags = mutableSetOf<MangaTag>()
-        mangaObj.optJSONArray("tags")?.let { arr ->
-            for (i in 0 until arr.length()) {
-                val tName = arr.optString(i, "")
-                if (tName.isNotBlank()) tags.add(MangaTag(tName, tName, source))
-            }
-        }
-        
-        val authors = mutableSetOf<String>()
-        listOf("author", "artist").forEach { key ->
-            val value = mangaObj.opt(key)
-            if (value is JSONArray) {
-                for (i in 0 until value.length()) {
-                    val a = value.optString(i, "").trim()
-                    if (a.isNotBlank()) authors.add(a)
-                }
-            } else if (value is String && value.isNotBlank()) {
-                if (value.startsWith("[") && value.endsWith("]")) {
-                    try {
-                        val arr = JSONArray(value)
-                        for (i in 0 until arr.length()) {
-                            val a = arr.optString(i, "").trim()
-                            if (a.isNotBlank()) authors.add(a)
-                        }
-                    } catch (e: Exception) {
-                        authors.add(value.trim())
-                    }
-                } else {
-                    authors.add(value.trim())
-                }
-            }
-        }
-
-        var cover = mangaObj.optString("cover", "")
-        if (cover.isNotEmpty() && !cover.startsWith("http")) {
-            cover = if (cover.startsWith("/")) "https://cdn.thrive.moe$cover" else "https://cdn.thrive.moe/$cover"
-        } else if (cover.isEmpty()) {
-            cover = manga.coverUrl ?: ""
-        }
-
-        val title = mangaObj.optString("title", "")
+        val state = if (stateStr.contains("completed", true) || stateStr.contains("tamat", true)) MangaState.FINISHED else MangaState.ONGOING
 
         return manga.copy(
-            title = if (title.isNotEmpty()) title else manga.title,
-            description = description,
+            description = desc,
             state = state,
-            authors = authors,
-            tags = tags,
-            coverUrl = cover,
+            coverUrl = finalCover,
             chapters = chapters.sortedByDescending { it.number } 
         )
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val doc = webClient.httpGet("https://$domain${chapter.url}", headers).parseHtml()
-        
-        val imgElements = doc.select("img.mx-auto.block, img[src*=/data/]")
-        if (imgElements.isNotEmpty()) {
-            return imgElements.mapNotNull { img ->
-                val src = img.attr("src")
-                if (src.isNotBlank() && src.startsWith("http")) MangaPage(generateUid(src), src, null, source) else null
+        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return emptyList()
+        val nextData = JSONObject(scriptData)
+
+        // FUNGSI SAPU JAGAT: Cari array gambar di seluruh pelosok JSON
+        var prefix = ""
+        val imagesList = mutableListOf<String>()
+
+        fun extractImages(obj: JSONObject) {
+            if (obj.has("prefix") && obj.optString("prefix").isNotEmpty()) prefix = obj.optString("prefix")
+            
+            listOf("image", "images", "data", "pages").forEach { key ->
+                val arr = obj.optJSONArray(key)
+                if (arr != null && arr.length() > 0 && arr.optString(0).contains(".")) {
+                    for (i in 0 until arr.length()) imagesList.add(arr.getString(i))
+                }
+            }
+            
+            for (key in obj.keys()) {
+                val value = obj.opt(key)
+                if (value is JSONObject) extractImages(value)
+                else if (value is JSONArray) {
+                    for (i in 0 until value.length()) {
+                        val item = value.opt(i)
+                        if (item is JSONObject) extractImages(item)
+                    }
+                }
             }
         }
 
-        val scriptData = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return emptyList()
-        val pageProps = JSONObject(scriptData).optJSONObject("props")?.optJSONObject("pageProps") ?: return emptyList()
-        
-        val pagesObj = findPagesObject(pageProps) ?: pageProps
-        val prefix = pagesObj.optString("prefix", "")
-        
-        val images = pagesObj.optJSONArray("image") 
-            ?: pagesObj.optJSONArray("images") 
-            ?: pagesObj.optJSONArray("data")
-            ?: return emptyList()
+        extractImages(nextData)
 
-        return (0 until images.length()).map { i ->
-            val img = images.getString(i)
+        if (imagesList.isEmpty()) return emptyList()
+
+        return imagesList.map { img ->
             val imageUrl = if (img.startsWith("http")) img else "https://cdn.thrive.moe/data/$prefix/$img"
             MangaPage(generateUid(imageUrl), imageUrl, null, source)
         }
     }
 
-    private fun findMangaArray(obj: JSONObject): JSONArray? {
-        for (key in obj.keys()) {
-            val value = obj.opt(key)
-            if (value is JSONArray && value.length() > 0) {
-                val first = value.optJSONObject(0)
-                if (first != null && first.has("id") && first.has("title")) return value
-            } else if (value is JSONObject) {
-                val nested = findMangaArray(value)
-                if (nested != null) return nested
-            }
-        }
-        return null
-    }
-
-    private fun findChaptersArray(obj: JSONObject): JSONArray? {
-        for (key in obj.keys()) {
-            val value = obj.opt(key)
-            if (value is JSONArray && value.length() > 0) {
-                val first = value.optJSONObject(0)
-                if (first != null && (first.has("chapter_id") || first.has("chapter_number") || first.has("id"))) return value
-            } else if (value is JSONObject) {
-                val nested = findChaptersArray(value)
-                if (nested != null) return nested
-            }
-        }
-        return null
-    }
-
-    private fun findMangaObject(obj: JSONObject): JSONObject? {
-        for (key in obj.keys()) {
-            val value = obj.opt(key)
-            if (value is JSONObject) {
-                if (value.has("desc_ID") || value.has("description") || value.has("status") || value.has("title")) return value
-                val nested = findMangaObject(value)
-                if (nested != null) return nested
-            }
-        }
-        return null
-    }
-    
-    private fun findPagesObject(obj: JSONObject): JSONObject? {
-        if ((obj.has("image") || obj.has("images") || obj.has("data")) && obj.has("prefix")) return obj
-        for (key in obj.keys()) {
-            val value = obj.opt(key)
-            if (value is JSONObject) {
-                val nested = findPagesObject(value)
-                if (nested != null) return nested
-            }
-        }
-        return null
-    }
-
     private fun parseDate(dateStr: String): Long {
         if (dateStr.isEmpty()) return 0L
         return try {
-            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-            sdf.timeZone = TimeZone.getTimeZone("UTC")
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
             sdf.parse(dateStr.substringBefore("."))?.time ?: 0L
         } catch (e: Exception) { 0L }
     }
