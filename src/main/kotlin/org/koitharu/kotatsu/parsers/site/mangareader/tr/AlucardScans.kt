@@ -222,7 +222,11 @@ internal class AlucardScans(context: MangaLoaderContext) :
 				source = source,
 			)
 		}
-		return chapters
+		return chapters.sortedWith(
+			compareBy<MangaChapter> { it.number <= 0f }
+				.thenBy { it.number }
+				.thenBy { it.uploadDate.takeIf { date -> date > 0L } ?: Long.MAX_VALUE },
+		)
 	}
 
 	private fun parseTags(raw: Any?): Set<MangaTag> {

@@ -27,7 +27,6 @@ import org.koitharu.kotatsu.parsers.util.attrAsAbsoluteUrlOrNull
 import org.koitharu.kotatsu.parsers.util.attrAsRelativeUrl
 import org.koitharu.kotatsu.parsers.util.attrAsRelativeUrlOrNull
 import org.koitharu.kotatsu.parsers.util.generateUid
-import org.koitharu.kotatsu.parsers.util.mapChapters
 import org.koitharu.kotatsu.parsers.util.mapToSet
 import org.koitharu.kotatsu.parsers.util.nullIfEmpty
 import org.koitharu.kotatsu.parsers.util.oneOrThrowIfMany
@@ -265,26 +264,10 @@ internal abstract class InitMangaParser(
 			}
 
 			val beforeCount = seenUrls.size
-			chapters += items.mapChapters(reversed = true) { index, element ->
-				val a = element.selectFirst("a[href]") ?: return@mapChapters null
-				val chapterUrl = a.attrAsRelativeUrlOrNull("href") ?: return@mapChapters null
-				if (!seenUrls.add(chapterUrl)) return@mapChapters null
-
-				val rawTitle = element.selectFirst("h3, h4")?.text()?.trim()
-					?: a.text().trim()
-				val title = rawTitle.substringAfterLast('–', rawTitle).substringAfterLast('-', rawTitle).trim()
-
-				MangaChapter(
-					id = generateUid(chapterUrl),
-					title = title.ifEmpty { rawTitle },
-					url = chapterUrl,
-					number = index + 1f,
-					volume = 0,
-					scanlator = null,
-					uploadDate = parseChapterDate(element),
-					branch = null,
-					source = source,
-				)
+			chapters += items.mapNotNull { element ->
+				val chapter = parseChapter(element) ?: return@mapNotNull null
+				if (!seenUrls.add(chapter.url)) return@mapNotNull null
+				chapter
 			}
 
 			if (seenUrls.size == beforeCount) {
@@ -293,7 +276,33 @@ internal abstract class InitMangaParser(
 			page++
 		}
 
-		return chapters
+		return chapters.sortedWith(
+			compareBy<MangaChapter> { it.number <= 0f }
+				.thenBy { it.number }
+				.thenBy { it.uploadDate.takeIf { date -> date > 0L } ?: Long.MAX_VALUE }
+				.thenBy { it.title.orEmpty().lowercase(sourceLocale) },
+		)
+	}
+
+	private fun parseChapter(element: Element): MangaChapter? {
+		val a = element.selectFirst("a[href]") ?: return null
+		val chapterUrl = a.attrAsRelativeUrlOrNull("href") ?: return null
+		val rawTitle = element.selectFirst("h3, h4")?.textOrNull()
+			?: a.attr("title").trim().nullIfEmpty()
+			?: element.selectFirst("img[alt]")?.attr("alt")?.trim()?.nullIfEmpty()
+			?: a.text().trim().nullIfEmpty()
+		val chapterNumber = extractChapterNumber(chapterUrl, rawTitle)
+		return MangaChapter(
+			id = generateUid(chapterUrl),
+			title = rawTitle ?: chapterNumber?.let { "Bölüm ${it.toChapterNumberString()}" }.orEmpty(),
+			url = chapterUrl,
+			number = chapterNumber ?: 0f,
+			volume = 0,
+			scanlator = null,
+			uploadDate = parseChapterDate(element),
+			branch = null,
+			source = source,
+		)
 	}
 
 	private fun parseChapterDate(element: Element): Long {
@@ -337,20 +346,45 @@ internal abstract class InitMangaParser(
 	}
 
 	private fun Document.extractTags(): Set<MangaTag> {
-		return select("a[href]").mapNotNullTo(LinkedHashSet()) { a ->
-			val relativeUrl = a.attrAsRelativeUrlOrNull("href") ?: return@mapNotNullTo null
-			val path = relativeUrl.substringBefore('?').trimEnd('/')
-			if (!path.startsWith("/tur/")) return@mapNotNullTo null
-			if (path.count { it == '/' } != 2) return@mapNotNullTo null
-
-			val title = a.text().trim().trimStart('#').nullIfEmpty() ?: return@mapNotNullTo null
-			MangaTag(
-				title = title.toTitleCase(sourceLocale),
-				key = relativeUrl,
-				source = source,
-			)
+		val genreAnchors = select("ul.uk-list.uk-text-small li a, div#uk-tab-3 a, #genre-tags a")
+		if (genreAnchors.isNotEmpty()) {
+			return genreAnchors.mapNotNullTo(LinkedHashSet(), ::extractTagFromAnchor)
 		}
+		return select("a[href]").mapNotNullTo(LinkedHashSet(), ::extractTagFromAnchor)
 	}
+
+	private fun extractTagFromAnchor(anchor: Element): MangaTag? {
+		val relativeUrl = anchor.attrAsRelativeUrlOrNull("href") ?: return null
+		val path = relativeUrl.substringBefore('?').trimEnd('/')
+		if (path.count { it == '/' } !in 2..3) return null
+		if (!TAG_PATH_REGEX.matches(path)) return null
+
+		val title = anchor.text().trim().trimStart('#').nullIfEmpty() ?: return null
+		return MangaTag(
+			title = title.toTitleCase(sourceLocale),
+			key = relativeUrl,
+			source = source,
+		)
+	}
+
+	private fun extractChapterNumber(chapterUrl: String, rawTitle: String?): Float? {
+		val fromUrl = CHAPTER_NUMBER_REGEX.find(chapterUrl.substringAfterLast('/').ifEmpty { chapterUrl })
+			?.groupValues
+			?.getOrNull(1)
+			?.toNormalizedChapterNumber()
+		if (fromUrl != null) {
+			return fromUrl
+		}
+
+		return CHAPTER_NUMBER_REGEX.find(rawTitle.orEmpty())
+			?.groupValues
+			?.getOrNull(1)
+			?.toNormalizedChapterNumber()
+	}
+
+	private fun String.toNormalizedChapterNumber(): Float? = replace(',', '.').toFloatOrNull()
+
+	private fun Float.toChapterNumberString(): String = toString().removeSuffix(".0")
 
 	private fun extractEncryptedObject(document: Document): JSONObject? {
 		REGEX_ENCRYPTED_DATA.find(document.outerHtml())?.groupValues?.getOrNull(1)?.let {
@@ -481,5 +515,8 @@ internal abstract class InitMangaParser(
 		private val REGEX_ENCRYPTED_DATA =
 			Regex("""var\s+InitMangaEncryptedChapter\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
 		private val IMAGE_URL_REGEX = Regex("""https?://[^\s"'<>]+/wp-content/uploads/init-manga/[^\s"'<>]+""")
+		private val TAG_PATH_REGEX = Regex("""/(?:tur|genre|kategori|category)/[^/]+(?:/[^/]+)?""")
+		private val CHAPTER_NUMBER_REGEX =
+			Regex("""(?:bolum|bölüm|chapter|ch)[^0-9]*([0-9]+(?:[.,][0-9]+)?)""", RegexOption.IGNORE_CASE)
 	}
 }

@@ -2,7 +2,6 @@ package org.koitharu.kotatsu.parsers.site.uzaymanga
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import okhttp3.Headers
 import org.json.JSONArray
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -51,9 +50,6 @@ internal abstract class UzayMangaParser(
 
 	private val tagMutex = Mutex()
 	private var cachedTags: Set<MangaTag>? = null
-	private val siteHeaders = Headers.Builder()
-		.add("Referer", "https://$domain/")
-		.build()
 
 	private val chapterDateFormat = SimpleDateFormat("MMM d ,yyyy", Locale("tr"))
 
@@ -61,6 +57,9 @@ internal abstract class UzayMangaParser(
 		super.onCreateConfig(keys)
 		keys.add(userAgentKey)
 	}
+
+	override val defaultSortOrder: SortOrder
+		get() = SortOrder.POPULARITY
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.ALPHABETICAL,
@@ -117,7 +116,7 @@ internal abstract class UzayMangaParser(
 	}
 
 	override suspend fun getDetails(manga: Manga): Manga {
-		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain), extraHeaders = siteHeaders).parseHtml()
+		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain), extraHeaders = siteHeaders()).parseHtml()
 		val content = doc.getElementById("content") ?: doc
 
 		return manga.copy(
@@ -133,7 +132,7 @@ internal abstract class UzayMangaParser(
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), extraHeaders = siteHeaders).parseHtml()
+		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), extraHeaders = siteHeaders()).parseHtml()
 		val script = doc.select("script")
 			.asSequence()
 			.map(Element::html)
@@ -210,12 +209,12 @@ internal abstract class UzayMangaParser(
 			)
 		}
 
-		val doc = webClient.httpGet(url, extraHeaders = siteHeaders).parseHtml()
+		val doc = webClient.httpGet(url, extraHeaders = siteHeaders()).parseHtml()
 		return doc.select("section[aria-label='series area'] .card").mapNotNull(::parseSearchCard)
 	}
 
 	private suspend fun getLatestPage(page: Int): List<Manga> {
-		val doc = webClient.httpGet("https://$domain/?page=$page", extraHeaders = siteHeaders).parseHtml()
+		val doc = webClient.httpGet("https://$domain/?page=$page", extraHeaders = siteHeaders()).parseHtml()
 		val header = doc.selectFirst("div.header:has(h2:contains(En Son Yüklenen))")
 		val grid = header?.nextElementSibling()
 			?: doc.selectFirst("div.grid.grid-cols-1")
@@ -231,7 +230,7 @@ internal abstract class UzayMangaParser(
 
 	private suspend fun searchBySlug(slug: String): List<Manga> {
 		val normalizedSlug = slug.trim().removePrefix("/").nullIfEmpty() ?: return emptyList()
-		val doc = webClient.httpGet("https://$domain/manga/$normalizedSlug", extraHeaders = siteHeaders).parseHtml()
+		val doc = webClient.httpGet("https://$domain/manga/$normalizedSlug", extraHeaders = siteHeaders()).parseHtml()
 		if (!isMangaPage(doc)) {
 			return emptyList()
 		}
@@ -241,7 +240,7 @@ internal abstract class UzayMangaParser(
 	private suspend fun searchByApi(query: String): List<Manga> {
 		val raw = webClient.httpGet(
 			url = "https://$domain/api/series/search/navbar?search=${query.urlEncoded()}",
-			extraHeaders = siteHeaders,
+			extraHeaders = siteHeaders(),
 		).parseRaw().trim()
 		if (raw.isEmpty() || raw == "[]") {
 			return emptyList()
@@ -379,7 +378,7 @@ internal abstract class UzayMangaParser(
 	}
 
 	private suspend fun fetchTags(): Set<MangaTag> {
-		val doc = webClient.httpGet("https://$domain/search", extraHeaders = siteHeaders).parseHtml()
+		val doc = webClient.httpGet("https://$domain/search", extraHeaders = siteHeaders()).parseHtml()
 		val script = doc.select("script")
 			.firstOrNull { it.html().contains("\"category\":[") }
 			?.html()
@@ -415,6 +414,10 @@ internal abstract class UzayMangaParser(
 			.trim()
 			.replace(Regex("\\s+"), "-")
 	}
+
+	private fun siteHeaders() = getRequestHeaders().newBuilder()
+		.set("Referer", "https://$domain/")
+		.build()
 
 	private companion object {
 		private const val URL_SEARCH_PREFIX = "slug:"

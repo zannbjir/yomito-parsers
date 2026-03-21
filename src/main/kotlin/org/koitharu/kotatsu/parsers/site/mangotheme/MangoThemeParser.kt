@@ -21,7 +21,6 @@ import org.koitharu.kotatsu.parsers.model.SortOrder
 import org.koitharu.kotatsu.parsers.util.generateUid
 import org.koitharu.kotatsu.parsers.util.nullIfEmpty
 import org.koitharu.kotatsu.parsers.util.parseSafe
-import org.koitharu.kotatsu.parsers.util.toAbsoluteUrl
 import org.koitharu.kotatsu.parsers.util.urlEncoded
 import org.koitharu.kotatsu.parsers.util.json.getIntOrDefault
 import org.koitharu.kotatsu.parsers.util.json.getStringOrNull
@@ -105,7 +104,7 @@ internal abstract class MangoThemeParser(
 			tags = if (parsed.tags.isNotEmpty()) parsed.tags else manga.tags,
 			state = parsed.state ?: manga.state,
 			contentRating = parsed.contentRating ?: manga.contentRating,
-			chapters = parseChapters(item, parsed.url.extractStoredSlug()).sortedByDescending { it.number },
+			chapters = parseChapters(item, parsed.url.extractStoredSlug()).sortedBy { it.number },
 		)
 	}
 
@@ -285,7 +284,7 @@ internal abstract class MangoThemeParser(
 
 	private fun String.toAbsoluteCdnUrl(): String = when {
 		startsWith("http://") || startsWith("https://") -> this
-		else -> toAbsoluteUrl(cdnUrl)
+		else -> "${cdnUrl.trimEnd('/')}/${removePrefix("/")}"
 	}
 
 	private fun buildInternalMangaUrl(mangaId: String, slug: String?): String = buildString {

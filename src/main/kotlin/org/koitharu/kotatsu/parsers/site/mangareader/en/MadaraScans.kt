@@ -33,6 +33,7 @@ internal class MadaraScans(context: MangaLoaderContext) :
 
 	override val listUrl = "/series"
 	override val datePattern = "yyyy/MM/dd"
+	override val selectTestScript = "script:containsData(ts_reader.run)"
 
 	override val filterCapabilities: MangaListFilterCapabilities
 		get() = super.filterCapabilities.copy(

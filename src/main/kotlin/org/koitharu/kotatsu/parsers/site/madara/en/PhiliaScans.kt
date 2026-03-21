@@ -55,6 +55,13 @@ internal class PhiliaScans(context: MangaLoaderContext) :
 			append(domain)
 
 			when {
+				!filter.query.isNullOrEmpty() -> {
+					append("/?post_type=wp-manga&s=")
+					append(filter.query.urlEncoded())
+					append("&paged=")
+					append(page)
+				}
+
 				order == SortOrder.UPDATED && filter.query.isNullOrEmpty() -> {
 					append("/recently-updated/?page=")
 					append(page)
@@ -74,7 +81,12 @@ internal class PhiliaScans(context: MangaLoaderContext) :
 				}
 			}
 		}
-		return parseMangaList(webClient.httpGet(url).parseHtml())
+		val doc = webClient.httpGet(url).parseHtml()
+		return if (!filter.query.isNullOrEmpty()) {
+			parseSearchPage(doc)
+		} else {
+			parseMangaList(doc)
+		}
 	}
 
 	override fun parseMangaList(doc: Document): List<Manga> {
@@ -85,7 +97,7 @@ internal class PhiliaScans(context: MangaLoaderContext) :
 				id = generateUid(relativeUrl),
 				url = relativeUrl,
 				publicUrl = titleLink.attrAsAbsoluteUrl("href"),
-				coverUrl = normalizeCoverUrl(unit.selectFirst("img")?.let(::imageUrlFromElement)),
+				coverUrl = normalizeCoverUrl(unit.selectFirst("img:not(.flag-icon)")?.let(::imageUrlFromElement)),
 				title = titleLink.text().trim(),
 				altTitles = emptySet(),
 				rating = RATING_UNKNOWN,
@@ -113,7 +125,10 @@ internal class PhiliaScans(context: MangaLoaderContext) :
 				?.toSet()
 				.orEmpty(),
 			description = doc.selectFirst("div.description-content")?.html(),
-			coverUrl = doc.selectFirst(".main-cover img")?.let(::imageUrlFromElement) ?: manga.coverUrl,
+			coverUrl = doc.selectFirst("meta[property=og:image]")?.attr("content")?.trim()?.nullIfEmpty()
+				?: doc.selectFirst(".main-cover img:not(.flag-icon), .main-cover .cover img:not(.flag-icon), .summary_image img:not(.flag-icon)")
+					?.let(::imageUrlFromElement)
+				?: manga.coverUrl,
 			tags = doc.select("div.genre-list a").mapNotNullToSet(::createTag),
 			authors = setOfNotNull(
 				findStatValue(doc, "Author"),
@@ -122,6 +137,35 @@ internal class PhiliaScans(context: MangaLoaderContext) :
 			state = parseState(findStatValue(doc, "Status")),
 			chapters = chapters,
 		)
+	}
+
+	private fun parseSearchPage(doc: Document): List<Manga> {
+		return doc.select("a[href*='/series/']").mapNotNull { link ->
+			val href = link.attr("href")
+			if (!href.contains("/series/") || href.endsWith("/series/")) return@mapNotNull null
+			val relativeUrl = link.attrAsRelativeUrl("href")
+			val title = link.attr("title").trim().nullIfEmpty()
+				?: link.textOrNull()?.replace(Regex("""\s+"""), " ")?.trim()?.nullIfEmpty()
+				?: link.selectFirst("img")?.attr("alt")?.trim()?.nullIfEmpty()
+				?: return@mapNotNull null
+			val cover = link.selectFirst("img:not(.flag-icon)")?.let(::imageUrlFromElement)
+				?: link.parent()?.selectFirst("img:not(.flag-icon)")?.let(::imageUrlFromElement)
+
+			Manga(
+				id = generateUid(relativeUrl),
+				url = relativeUrl,
+				publicUrl = link.attrAsAbsoluteUrl("href"),
+				coverUrl = normalizeCoverUrl(cover),
+				title = title,
+				altTitles = emptySet(),
+				rating = RATING_UNKNOWN,
+				tags = emptySet(),
+				authors = emptySet(),
+				state = null,
+				source = source,
+				contentRating = null,
+			)
+		}.distinctBy { it.url }
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {

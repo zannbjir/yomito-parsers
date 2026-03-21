@@ -8,7 +8,7 @@ import org.koitharu.kotatsu.parsers.model.MangaState
 import org.koitharu.kotatsu.parsers.model.MangaTag
 import org.koitharu.kotatsu.parsers.site.mangotheme.MangoThemeParser
 
-@MangaSourceParser("IMPERIODABRITANNIA", "Sagrado Imp\u00e9rio da Britannia", "pt")
+@MangaSourceParser("IMPERIODABRITANNIA", "Imp\u00e9rio da Britannia", "pt")
 internal class ImperiodaBritannia(context: MangaLoaderContext) : MangoThemeParser(
 	context = context,
 	source = MangaParserSource.IMPERIODABRITANNIA,
