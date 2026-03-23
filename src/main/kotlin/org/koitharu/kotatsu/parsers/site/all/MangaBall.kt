@@ -329,7 +329,7 @@ internal abstract class MangaBallParser(
 			mapOf("title_id" to titleId),
 		).parseJson()
 		val containers = json.getJSONArray("ALL_CHAPTERS")
-		val chapters = ArrayList<MangaChapter>(containers.length())
+		val chapters = LinkedHashMap<String, MangaChapter>(containers.length())
 		for (i in 0 until containers.length()) {
 			val container = containers.getJSONObject(i)
 			val number = container.optDouble("number_float", 0.0).toFloat()
@@ -354,24 +354,9 @@ internal abstract class MangaBallParser(
 				val volume = translation.optInt("volume", 0)
 				val translationName = translation.optString("name").trim()
 				val numberText = number.toString().removeSuffix(".0")
-				val title = buildString {
-					if (volume > 0) {
-						append("Vol. ")
-						append(volume)
-						append(' ')
-					}
-					if (translationName.contains(numberText)) {
-						append(translationName)
-					} else {
-						append("Ch. ")
-						append(numberText)
-						append(' ')
-						append(translationName)
-					}
-				}.trim()
-				chapters += MangaChapter(
+				val chapter = MangaChapter(
 					id = generateUid(translation.getString("id")),
-					title = title,
+					title = buildChapterTitle(numberText, volume, translationName),
 					number = number,
 					volume = volume,
 					url = translation.getString("id"),
@@ -380,9 +365,62 @@ internal abstract class MangaBallParser(
 					branch = language.takeIf { siteLanguages.size > 1 },
 					source = source,
 				)
+				val key = "$language|$volume|$number"
+				val existing = chapters[key]
+				if (existing == null || shouldReplaceChapter(existing, chapter)) {
+					chapters[key] = chapter
+				}
 			}
 		}
-		return chapters
+		return chapters.values.toList().reversed()
+	}
+
+	private fun buildChapterTitle(numberText: String, volume: Int, rawName: String): String {
+		val baseTitle = buildString {
+			if (volume > 0) {
+				append("Vol. ")
+				append(volume)
+				append(' ')
+			}
+			append("Chapter ")
+			append(numberText)
+		}
+		val name = rawName.trim()
+		if (name.isEmpty()) {
+			return baseTitle
+		}
+		val compactName = name.replace(Regex("\\s+"), " ")
+		val chapterPrefixRegex = Regex("^(Vol\\.?\\s*\\d+\\s+)?Ch(?:apter)?\\.?\\s*", RegexOption.IGNORE_CASE)
+		val normalized = chapterPrefixRegex.find(compactName)?.let { match ->
+			val volumePrefix = match.groups[1]?.value?.trim().orEmpty()
+			buildString {
+				if (volumePrefix.isNotEmpty()) {
+					append(volumePrefix.replaceFirst(Regex("(?i)^vol\\.?"), "Vol."))
+					append(' ')
+				}
+				append("Chapter ")
+				append(compactName.removeRange(match.range))
+			}
+		}?.trim() ?: compactName.trim()
+		return if (normalized.startsWith("Chapter $numberText", ignoreCase = true) ||
+			normalized.startsWith("Vol. $volume Chapter $numberText", ignoreCase = true)
+		) {
+			normalized
+		} else {
+			"$baseTitle: $normalized"
+		}
+	}
+
+	private fun shouldReplaceChapter(current: MangaChapter, candidate: MangaChapter): Boolean {
+		val currentTitle = current.title.orEmpty()
+		val candidateTitle = candidate.title.orEmpty()
+		if (candidateTitle.length != currentTitle.length) {
+			return candidateTitle.length < currentTitle.length
+		}
+		if (candidate.uploadDate != current.uploadDate) {
+			return candidate.uploadDate > current.uploadDate
+		}
+		return candidate.id < current.id
 	}
 
 	private suspend fun resolveSearchUrl(query: String): List<Manga> {

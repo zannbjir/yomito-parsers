@@ -206,24 +206,31 @@ internal class ElderManga(context: MangaLoaderContext):
     }
 
     private suspend fun loadSiteDocument(url: String): Document {
-        tryHttpDocument(url)?.let { doc ->
-            return doc
+        when (val result = tryHttpDocument(url)) {
+            is HttpDocumentResult.Success -> return result.document
+            HttpDocumentResult.CloudflareChallenge -> context.requestBrowserAction(this, url)
+            HttpDocumentResult.SecondaryVerification,
+            HttpDocumentResult.Failed,
+            null -> Unit
         }
         return loadDocumentViaWebView(url)
             ?: throw ParseException("Failed to load page via automatic verification webview", url)
     }
 
-    private suspend fun tryHttpDocument(url: String): Document? {
+    private suspend fun tryHttpDocument(url: String): HttpDocumentResult? {
         val response = runCatching { webClient.httpGet(url) }.getOrNull() ?: return null
         return response.use { res ->
-            val doc = runCatching { res.parseHtml() }.getOrNull() ?: return null
+            val doc = runCatching { res.parseHtml() }.getOrNull() ?: return HttpDocumentResult.Failed
             if (hasValidElderContent(doc)) {
-                return doc
+                return HttpDocumentResult.Success(doc)
+            }
+            if (isCloudflareChallengePage(doc)) {
+                return HttpDocumentResult.CloudflareChallenge
             }
             if (isShieldVerificationPage(doc)) {
-                return null
+                return HttpDocumentResult.SecondaryVerification
             }
-            doc
+            HttpDocumentResult.Success(doc)
         }
     }
 
@@ -268,6 +275,23 @@ internal class ElderManga(context: MangaLoaderContext):
             html.contains("solving proof of work")
     }
 
+    private fun isCloudflareChallengePage(doc: Document): Boolean {
+        if (doc.selectFirst("script[src*=challenge-platform]") != null) return true
+        if (doc.getElementById("challenge-error-title") != null) return true
+        if (doc.getElementById("challenge-error-text") != null) return true
+        if (doc.selectFirst("form[action*=__cf_chl]") != null) return true
+        return isCloudflareChallengePage(doc.outerHtml())
+    }
+
+    private fun isCloudflareChallengePage(html: String): Boolean {
+        val lower = html.lowercase(Locale.ROOT)
+        return (lower.contains("just a moment") && lower.contains("cloudflare")) ||
+            (lower.contains("checking your browser") && lower.contains("cloudflare")) ||
+            lower.contains("cf-chl-opt") ||
+            lower.contains("cf-browser-verification") ||
+            lower.contains("/cdn-cgi/challenge-platform/")
+    }
+
     private fun hasValidElderContent(doc: Document): Boolean {
         return doc.select("section[aria-label='series area'] .card").isNotEmpty() ||
             doc.select("div.list-episode a").isNotEmpty() ||
@@ -279,6 +303,13 @@ internal class ElderManga(context: MangaLoaderContext):
     }
 
     private companion object {
+        private sealed interface HttpDocumentResult {
+            data class Success(val document: Document) : HttpDocumentResult
+            data object CloudflareChallenge : HttpDocumentResult
+            data object SecondaryVerification : HttpDocumentResult
+            data object Failed : HttpDocumentResult
+        }
+
         private val VERIFICATION_WAIT_SCRIPT = """
             (() => {
                 const hasElderContent = () => {

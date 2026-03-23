@@ -20,7 +20,7 @@ internal abstract class WeebDexParser(
 
     override val configKeyDomain = ConfigKey.Domain("weebdex.org")
     private val apiUrl = "https://api.weebdex.org/"
-    private val coverCdnUrl = "https://weebdex.org/covers/"
+    private val coverCdnUrl = "https://weebdex.org/"
     private val dataCdnUrl = "https://s15.weebdex.net/data/"
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(

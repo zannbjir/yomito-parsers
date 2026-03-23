@@ -64,9 +64,14 @@ internal class LunarAnime(context: MangaLoaderContext) :
 	override fun intercept(chain: Interceptor.Chain): Response {
 		val request = chain.request()
 		return if (request.url.host.equals(CDN_HOST, ignoreCase = true)) {
+			val chapterReferer = request.url.fragment
+				?.takeIf { it.startsWith("/manga/") }
+				?.let { "https://$domain$it" }
+				?: "https://$domain/"
 			chain.proceed(
 				request.newBuilder()
-					.header("Referer", "https://$domain/")
+					.header("Referer", chapterReferer)
+					.header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
 					.build(),
 			)
 		} else {
@@ -123,9 +128,9 @@ internal class LunarAnime(context: MangaLoaderContext) :
 			return emptyList()
 		}
 
-		val secretKey = fetchSecretKey(chapter.url.toAbsoluteUrl(domain))
+		val secretKey = fetchSecretKey(chapter.url.substringBefore("?").toAbsoluteUrl(domain))
 		val root = webClient.httpGet(
-			"$apiBaseUrl/api/manga/$slug/$chapterId?language=$language",
+			"$apiBaseUrl/api${chapter.url}",
 			getRequestHeaders(),
 		).parseJson()
 
@@ -146,7 +151,7 @@ internal class LunarAnime(context: MangaLoaderContext) :
 		return imageUrls.mapIndexed { index, imageUrl ->
 			MangaPage(
 				id = generateUid("${chapter.url}#$index"),
-				url = imageUrl,
+				url = "$imageUrl#${chapter.url}",
 				preview = null,
 				source = source,
 			)
@@ -292,13 +297,13 @@ internal class LunarAnime(context: MangaLoaderContext) :
 				title = displayTitle,
 				number = chapterNumber,
 				volume = 0,
-				url = "/manga/$slug/$chapterId/resort?lang=$language",
+				url = "/manga/$slug/$chapterId?lang=$language",
 				scanlator = chapter.optJSONObject("uploader_profile")?.optString("username")?.nullIfEmpty(),
 				uploadDate = parseDate(chapter.optString("uploaded_at")),
 				branch = languageToTitle(language),
 				source = source,
 			)
-		}.reversed()
+		}
 	}
 
 	private fun isChapterLocked(passwords: JSONArray?, chapterId: String, language: String): Boolean {

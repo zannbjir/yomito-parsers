@@ -195,7 +195,7 @@ internal class OlimpoScans(context: MangaLoaderContext) :
 			lastPage = root.optJSONObject("meta")?.optInt("last_page").takeIf { it != null && it > 0 } ?: page
 			page += 1
 		} while (page <= lastPage)
-		return result
+		return result.reversed()
 	}
 
 	private suspend fun fetchFilters(): Pair<Set<MangaTag>, Map<MangaState, String>> {
