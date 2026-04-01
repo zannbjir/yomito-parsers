@@ -172,45 +172,40 @@ internal class Komikapk(context: MangaLoaderContext) :
         }.distinctBy { it.id }
     }
 
-        override suspend fun getDetails(manga: Manga): Manga {
+                override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl).parseHtml()
 
-        // Title & Cover
         val title = doc.selectFirst("h1.font-label")?.text()?.trim() ?: manga.title
         val cover = doc.selectFirst("img.h-\\[200px\\]")?.src() ?: manga.coverUrl
         val description = doc.selectFirst("div.font-display.mt-5.text-center")?.text()?.trim()
 
-        // Tags
         val tags = doc.select("a[href^='/pustaka/semua/'][href*='/terbaru/']").mapNotNull { a ->
             val tagSlug = a.attr("href").split("/").getOrNull(3) ?: return@mapNotNull null
             MangaTag(title = a.text().trim(), key = tagSlug, source = source)
         }.toSet()
 
-        // State
         val state = if (doc.html().contains("completed", ignoreCase = true) ||
-                       doc.html().contains("tamat", ignoreCase = true)) 
+                       doc.html().contains("tamat", ignoreCase = true))
             MangaState.FINISHED else MangaState.ONGOING
 
-        // Adult detection (lebih kuat)
         val adultKeywords = listOf("adult", "mature", "smut", "ecchi", "hentai", "18+", "nakadashi", "rape", "incest", "milf", "loli", "shota", "futanari", "gangbang", "creampie", "ntr")
-        val contentRating = if (tags.any { tag -> adultKeywords.any { it in tag.title.lowercase() } }) 
+        val contentRating = if (tags.any { tag -> adultKeywords.any { it in tag.title.lowercase() } })
             ContentRating.ADULT else null
 
-                // === CHAPTER PARSING (FIXED) ===
+        // Chapter parsing (clean)
         val chapters = doc.select("a[href^='/komik/']").mapNotNull { a ->
             val href = a.attr("href").trim()
-            val title = a.text().trim()
+            val titleText = a.text().trim()
 
-            if (title.isBlank()) return@mapNotNull null
+            if (titleText.isBlank()) return@mapNotNull null
 
-            // Pakai fungsi dari parent class
-            val number = super.parseChapterNumber(title)
+            val number = super.parseChapterNumber(titleText)
                 ?: href.split("/").lastOrNull()?.toFloatOrNull()
                 ?: 0f
 
             MangaChapter(
                 id = generateUid(href),
-                title = if (title.isNotBlank()) title else "Chapter $number",
+                title = if (titleText.isNotBlank()) titleText else "Chapter $number",
                 url = href,
                 number = number,
                 volume = 0,
@@ -233,7 +228,7 @@ internal class Komikapk(context: MangaLoaderContext) :
             chapters = chapters,
         )
     }
-
+                
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
 
