@@ -10,7 +10,7 @@ import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
 import java.util.*
 
-@MangaSourceParser("KOMIKAPK", "KomikApk", "id")
+@MangaSourceParser("KOMIKAPK", "KomikApk", "id", ContentType.HENTAI)
 internal class Komikapk(context: MangaLoaderContext) :
     PagedMangaParser(context, MangaParserSource.KOMIKAPK, 20) {
 
@@ -124,35 +124,24 @@ internal class Komikapk(context: MangaLoaderContext) :
     }
 
     private fun buildListUrl(page: Int, filter: MangaListFilter, order: SortOrder): String {
-        // Search
-        if (!filter.query.isNullOrEmpty()) {
-            var url = "https://$domain/pencarian?q=${filter.query.urlEncoded()}&page=$page"
-            // Selalu aktifkan adult di search
-            url += "&is-adult=on"
-            return url
-        }
-
-        // List biasa (pustaka)
-        val type = when (filter.types.firstOrNull()) {
-            ContentType.MANGA -> "manga"
-            ContentType.MANHWA -> "manhwa"
-            ContentType.MANHUA -> "manhua"
-            else -> "semua"
-        }
-
-        val tag = filter.tags.firstOrNull()?.key ?: "semua"
-
-        val sort = when (order) {
-            SortOrder.POPULARITY -> "populer"
-            else -> "terbaru"
-        }
-
-        var url = "https://$domain/pustaka/$type/$tag/$sort/$page"
-        // Selalu tambah include_adult=true supaya adult content muncul
-        url += if (url.contains("?")) "&include_adult=true" else "?include_adult=true"
-
-        return url
+    if (!filter.query.isNullOrEmpty()) {
+        return "https://$domain/pencarian?q=${filter.query.urlEncoded()}&page=$page&is-adult=on"
     }
+
+    val type = when (filter.types.firstOrNull()) {
+        ContentType.MANGA -> "manga"
+        ContentType.MANHWA -> "manhwa"
+        ContentType.MANHUA -> "manhua"
+        else -> "semua"
+    }
+    val tag = filter.tags.firstOrNull()?.key ?: "semua"
+    val sort = when (order) {
+        SortOrder.POPULARITY -> "populer"
+        else -> "terbaru"
+    }
+
+    return "https://$domain/pustaka/$type/$tag/$sort/$page?include_adult=true"
+}
 
     private fun parseMangaList(doc: Document): List<Manga> {
         return doc.select("a[href^='/komik/']").mapNotNull { element ->
@@ -208,31 +197,27 @@ internal class Komikapk(context: MangaLoaderContext) :
             ContentRating.ADULT else null
 
         // === FIX UTAMA: Chapter parsing (support adult) ===
-        val chapters = doc.select("a[href*='/komik/']").mapNotNull { a ->
+        val chapters = doc.select("a[href^='/komik/']").mapNotNull { a ->
             val href = a.attr("href").trim()
-            val text = a.text().trim()
+            val title = a.text().trim()
 
-            // Hanya ambil yang keliatan chapter
-            if (text.contains("Chapter", ignoreCase = true) ||
-                text.contains("Bab", ignoreCase = true) ||
-                text.matches(Regex(".*\\d+.*"))) {
+            if (title.isBlank() || !title.contains(Regex("""\d"""))) return@mapNotNull null
 
-                val number = parseChapterNumber(text) 
-                    ?: href.split("/").lastOrNull()?.toFloatOrNull() 
-                    ?: 0f
+            val number = super.parseChapterNumber(title)
+                ?: href.split("/").lastOrNull()?.toFloatOrNull()
+                ?: 0f
 
-                MangaChapter(
-                    id = generateUid(href),
-                    title = text.ifBlank { "Chapter $number" },
-                    url = href,
-                    number = number,
-                    volume = 0,
-                    scanlator = null,
-                    uploadDate = 0L,
-                    branch = null,
-                    source = source,
-                )
-            } else null
+            MangaChapter(
+                id = generateUid(href),
+                title = title.ifBlank { "Chapter $number" },
+                url = href,
+                number = number,
+                volume = 0,
+                scanlator = null,
+                uploadDate = 0L,
+                branch = null,
+                source = source,
+            )
         }.distinctBy { it.url }
          .sortedByDescending { it.number }
 
