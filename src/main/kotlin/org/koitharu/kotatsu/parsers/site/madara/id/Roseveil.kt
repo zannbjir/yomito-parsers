@@ -10,10 +10,12 @@ import org.koitharu.kotatsu.parsers.model.ContentType
 import org.koitharu.kotatsu.parsers.model.Manga
 import org.koitharu.kotatsu.parsers.model.MangaListFilterCapabilities
 import org.koitharu.kotatsu.parsers.model.MangaParserSource
+import org.koitharu.kotatsu.parsers.model.RATING_UNKNOWN
 import org.koitharu.kotatsu.parsers.site.madara.MadaraParser
 import org.koitharu.kotatsu.parsers.util.attrAsRelativeUrl
 import org.koitharu.kotatsu.parsers.util.generateUid
 import org.koitharu.kotatsu.parsers.util.src
+import org.koitharu.kotatsu.parsers.util.toAbsoluteUrl
 import java.util.Locale
 
 @MangaSourceParser("ROSEVEIL", "Roseveil", "id", ContentType.HENTAI)
@@ -25,12 +27,11 @@ internal class Roseveil(context: MangaLoaderContext) :
     override val withoutAjax = true
     override val listUrl = "comic/"
 
-    // FIX 403 - Header + Interceptor kuat
+    // Header + Interceptor untuk bypass Cloudflare 403
     override fun getRequestHeaders() = super.getRequestHeaders().newBuilder()
         .add("Referer", "https://roseveil.org/")
         .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
         .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-        .add("Accept-Language", "id-ID,id;q=0.9,en;q=0.8")
         .build()
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -48,13 +49,17 @@ internal class Roseveil(context: MangaLoaderContext) :
         return chain.proceed(request)
     }
 
-    // Perbaikan title parsing (judul tidak lagi jadi angka)
+    // Fix judul tidak jadi angka
     override fun parseMangaList(doc: Document): List<Manga> {
         val items = doc.select("article")
-        if (items.isEmpty()) return super.parseMangaList(doc)
+        if (items.isEmpty()) {
+            return super.parseMangaList(doc)
+        }
 
         return items.mapNotNull { item ->
-            val link = item.selectFirst("h3 a, .post-title a, .manga-name a") ?: return@mapNotNull null
+            val link = item.selectFirst("h3 a, .post-title a, .manga-name a, a[href*='/comic/']") 
+                ?: return@mapNotNull null
+
             val href = link.attrAsRelativeUrl("href")
             val title = link.text().trim().ifBlank {
                 item.selectFirst("h3, .post-title, .manga-name")?.text()?.trim()
@@ -72,7 +77,7 @@ internal class Roseveil(context: MangaLoaderContext) :
                 authors = emptySet(),
                 state = null,
                 source = source,
-                contentRating = ContentRating.ADULT, // kebanyakan dewasa
+                contentRating = ContentRating.ADULT,   // kebanyakan dewasa
             )
         }
     }
