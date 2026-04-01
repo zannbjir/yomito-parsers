@@ -196,7 +196,7 @@ internal class Komikapk(context: MangaLoaderContext) :
         val contentRating = if (tags.any { tag -> adultKeywords.any { it in tag.title.lowercase() } }) 
             ContentRating.ADULT else null
 
-        // === FIX UTAMA: Chapter parsing (support adult) ===
+                // === CHAPTER PARSING (FIXED) ===
         val chapters = doc.select("a[href^='/komik/']").mapNotNull { a ->
             val href = a.attr("href").trim()
             val title = a.text().trim()
@@ -232,11 +232,6 @@ internal class Komikapk(context: MangaLoaderContext) :
             contentRating = contentRating,
             chapters = chapters,
         )
-    }
-
-    private fun parseChapterNumber(name: String): Float? {
-        val regex = Regex("""(?:chapter|ch\.?|bab)\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
-        return regex.find(name)?.groupValues?.get(1)?.toFloatOrNull()
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
