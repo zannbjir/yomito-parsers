@@ -1,5 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.madara.id
 
+import okhttp3.Headers
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.nodes.Document
@@ -17,26 +18,24 @@ import org.koitharu.kotatsu.parsers.util.src
 import org.koitharu.kotatsu.parsers.util.toAbsoluteUrl
 import java.util.Locale
 
-@MangaSourceParser("ROSEVEIL", "Roseveil", "id")
+@MangaSourceParser("ROSEVEIL", "Roseveil", "id", ContentType.HENTAI)
 internal class Roseveil(context: MangaLoaderContext) :
     MadaraParser(context, MangaParserSource.ROSEVEIL, "roseveil.org") {
 
-    override val sourceLocale = Locale.ID
+    override val sourceLocale = Locale.US
     override val datePattern = "MMMM dd, yyyy"
     override val withoutAjax = true
     override val listUrl = "comic/"
 
-    // Header lebih kuat + mobile-like
-    override fun getRequestHeaders() = Headers.Builder()
+    // Header kuat + mobile
+    override fun getRequestHeaders(): Headers = Headers.Builder()
         .add("Referer", "https://roseveil.org/")
         .add("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36")
         .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
         .add("Accept-Language", "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
-        .add("Sec-Fetch-Site", "same-origin")
-        .add("Sec-Fetch-Mode", "navigate")
         .build()
 
-    // Interceptor super agresif
+    // Interceptor untuk bypass Cloudflare
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         if (request.url.host.contains("roseveil")) {
@@ -51,11 +50,10 @@ internal class Roseveil(context: MangaLoaderContext) :
         return chain.proceed(request)
     }
 
-    // Parse list yang lebih kuat (fix judul angka + no content)
+    // Fix judul angka + "tidak ditemukan"
     override fun parseMangaList(doc: Document): List<Manga> {
         val items = doc.select("article, .manga, .comic-item, .post")
         if (items.isEmpty()) {
-            // fallback ke parent kalau selector gagal
             return super.parseMangaList(doc)
         }
 
