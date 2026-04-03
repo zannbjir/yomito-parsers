@@ -68,30 +68,35 @@ internal class Manhwaku(context: MangaLoaderContext) :
                     ?: pageProps.optJSONObject("data")?.optJSONArray("items")
                     ?: return emptyList()
 
-                return dataArray.mapNotNull { jo ->
-                    // PERBAIKAN: Gunakan optString
+                // PERBAIKAN: Menggunakan standard FOR loop agar tipe datanya jelas (JSONObject)
+                val result = mutableListOf<Manga>()
+                for (i in 0 until dataArray.length()) {
+                    val jo = dataArray.optJSONObject(i) ?: continue
                     val slug = jo.optString("slug", "").ifEmpty { jo.optString("id", "") }
-                    if (slug.isEmpty()) return@mapNotNull null
+                    if (slug.isEmpty()) continue
 
                     val title = jo.optString("title", "Untitled")
                     var cover = jo.optString("cover", "").ifEmpty { jo.optString("image", "") }
                     if (cover.startsWith("/")) cover = "https://$domain$cover"
 
-                    Manga(
-                        id = generateUid(slug),
-                        title = title.trim(),
-                        altTitles = emptySet(),
-                        url = "/detail/$slug",
-                        publicUrl = "https://$domain/detail/$slug",
-                        rating = RATING_UNKNOWN,
-                        contentRating = ContentRating.SAFE,
-                        coverUrl = cover,
-                        tags = emptySet(),
-                        state = null,
-                        authors = emptySet(),
-                        source = source
+                    result.add(
+                        Manga(
+                            id = generateUid(slug),
+                            title = title.trim(),
+                            altTitles = emptySet(),
+                            url = "/detail/$slug",
+                            publicUrl = "https://$domain/detail/$slug",
+                            rating = RATING_UNKNOWN,
+                            contentRating = ContentRating.SAFE,
+                            coverUrl = cover,
+                            tags = emptySet(),
+                            state = null,
+                            authors = emptySet(),
+                            source = source
+                        )
                     )
                 }
+                return result
             } catch (_: Exception) {}
         }
 
@@ -152,7 +157,6 @@ internal class Manhwaku(context: MangaLoaderContext) :
                 val detailData = pageProps?.optJSONObject("data") ?: pageProps?.optJSONObject("manhwa")
 
                 if (detailData != null) {
-                    // PERBAIKAN: Gunakan optString
                     description = detailData.optString("description", "").ifEmpty { detailData.optString("synopsis", "") }
                     val status = detailData.optString("status", "")
                     state = if (status.equals("ongoing", ignoreCase = true)) MangaState.ONGOING else MangaState.FINISHED
@@ -161,7 +165,6 @@ internal class Manhwaku(context: MangaLoaderContext) :
                     for (i in 0 until chaptersArray.length()) {
                         val ch = chaptersArray.getJSONObject(i)
                         
-                        // PERBAIKAN: Gunakan optString
                         val chSlug = ch.optString("slug", "")
                         val chTitle = ch.optString("title", "").ifEmpty { ch.optString("name", "") }
                         val numberStr = ch.optString("number", "").ifEmpty { ch.optString("chapter", "0") }
