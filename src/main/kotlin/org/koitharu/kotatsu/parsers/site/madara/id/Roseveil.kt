@@ -8,7 +8,6 @@ import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.model.ContentRating
 import org.koitharu.kotatsu.parsers.model.ContentType
 import org.koitharu.kotatsu.parsers.model.Manga
-import org.koitharu.kotatsu.parsers.model.MangaListFilterCapabilities
 import org.koitharu.kotatsu.parsers.model.MangaParserSource
 import org.koitharu.kotatsu.parsers.model.RATING_UNKNOWN
 import org.koitharu.kotatsu.parsers.site.madara.MadaraParser
@@ -18,41 +17,45 @@ import org.koitharu.kotatsu.parsers.util.src
 import org.koitharu.kotatsu.parsers.util.toAbsoluteUrl
 import java.util.Locale
 
-@MangaSourceParser("ROSEVEIL", "Roseveil", "id", ContentType.HENTAI)
+@MangaSourceParser("ROSEVEIL", "Roseveil", "id")
 internal class Roseveil(context: MangaLoaderContext) :
     MadaraParser(context, MangaParserSource.ROSEVEIL, "roseveil.org") {
 
-    override val sourceLocale = Locale.US
+    override val sourceLocale = Locale.ID
     override val datePattern = "MMMM dd, yyyy"
     override val withoutAjax = true
     override val listUrl = "comic/"
 
-    // Header + Interceptor untuk bypass Cloudflare 403
-    override fun getRequestHeaders() = super.getRequestHeaders().newBuilder()
+    // Header lebih kuat + mobile-like
+    override fun getRequestHeaders() = Headers.Builder()
         .add("Referer", "https://roseveil.org/")
-        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
+        .add("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36")
         .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+        .add("Accept-Language", "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
+        .add("Sec-Fetch-Site", "same-origin")
+        .add("Sec-Fetch-Mode", "navigate")
         .build()
 
+    // Interceptor super agresif
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        val url = request.url.toString()
-
-        if (url.contains("roseveil")) {
+        if (request.url.host.contains("roseveil")) {
             val newRequest = request.newBuilder()
                 .addHeader("Referer", "https://roseveil.org/")
                 .addHeader("Origin", "https://roseveil.org")
-                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
+                .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36")
+                .addHeader("Accept-Language", "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
                 .build()
             return chain.proceed(newRequest)
         }
         return chain.proceed(request)
     }
 
-    // Fix judul tidak jadi angka
+    // Parse list yang lebih kuat (fix judul angka + no content)
     override fun parseMangaList(doc: Document): List<Manga> {
-        val items = doc.select("article")
+        val items = doc.select("article, .manga, .comic-item, .post")
         if (items.isEmpty()) {
+            // fallback ke parent kalau selector gagal
             return super.parseMangaList(doc)
         }
 
@@ -62,14 +65,16 @@ internal class Roseveil(context: MangaLoaderContext) :
 
             val href = link.attrAsRelativeUrl("href")
             val title = link.text().trim().ifBlank {
-                item.selectFirst("h3, .post-title, .manga-name")?.text()?.trim()
+                item.selectFirst("h3, .post-title, .manga-name, .title")?.text()?.trim()
             } ?: return@mapNotNull null
+
+            val cover = item.selectFirst("img")?.src()
 
             Manga(
                 id = generateUid(href),
                 url = href,
                 publicUrl = href.toAbsoluteUrl(domain),
-                coverUrl = item.selectFirst("img")?.src(),
+                coverUrl = cover,
                 title = title,
                 altTitles = emptySet(),
                 rating = RATING_UNKNOWN,
@@ -77,7 +82,7 @@ internal class Roseveil(context: MangaLoaderContext) :
                 authors = emptySet(),
                 state = null,
                 source = source,
-                contentRating = ContentRating.ADULT,   // kebanyakan dewasa
+                contentRating = ContentRating.ADULT,
             )
         }
     }
