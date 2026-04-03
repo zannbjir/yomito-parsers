@@ -228,6 +228,11 @@ internal class Komikapk(context: MangaLoaderContext) :
             chapters = chapters,
         )
     }
+
+    private fun parseChapterNumber(name: String): Float? {
+        val regex = Regex("""(?:chapter|ch\.?|bab)\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
+        return regex.find(name)?.groupValues?.get(1)?.toFloatOrNull()
+    }
                 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
