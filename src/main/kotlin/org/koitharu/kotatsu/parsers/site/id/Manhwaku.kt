@@ -69,11 +69,11 @@ internal class Manhwaku(context: MangaLoaderContext) :
                     ?: return emptyList()
 
                 return dataArray.mapNotNull { jo ->
-                    val slug = jo.optString("slug", "") ?: jo.optString("id", "")
+                    val slug = (jo.opt("slug")?.toString() ?: jo.opt("id")?.toString()) ?: return@mapNotNull null
                     if (slug.isEmpty()) return@mapNotNull null
 
-                    val title = jo.optString("title", "Untitled")
-                    var cover = jo.optString("cover", "") ?: jo.optString("image", "")
+                    val title = jo.opt("title")?.toString() ?: "Untitled"
+                    var cover = jo.opt("cover")?.toString() ?: jo.opt("image")?.toString() ?: ""
                     if (cover.startsWith("/")) cover = "https://$domain$cover"
 
                     Manga(
@@ -151,16 +151,17 @@ internal class Manhwaku(context: MangaLoaderContext) :
                 val detailData = pageProps?.optJSONObject("data") ?: pageProps?.optJSONObject("manhwa")
 
                 if (detailData != null) {
-                    description = detailData.optString("description", "") ?: detailData.optString("synopsis", "")
-                    val status = detailData.optString("status", "")
+                    description = detailData.opt("description")?.toString() ?: detailData.opt("synopsis")?.toString() ?: ""
+                    val status = detailData.opt("status")?.toString() ?: ""
                     state = if (status.equals("ongoing", ignoreCase = true)) MangaState.ONGOING else MangaState.FINISHED
 
                     val chaptersArray = detailData.optJSONArray("chapters") ?: JSONArray()
                     for (i in 0 until chaptersArray.length()) {
                         val ch = chaptersArray.getJSONObject(i)
-                        val chSlug = ch.optString("slug", "")
-                        val chTitle = ch.optString("title", ch.optString("name", ""))
-                        val number = ch.optString("number", ch.optString("chapter", "0")).toFloatOrNull() ?: 0f
+                        val chSlug = ch.opt("slug")?.toString() ?: ""
+                        val chTitle = ch.opt("title")?.toString() ?: ch.opt("name")?.toString() ?: ""
+                        val numberStr = ch.opt("number")?.toString() ?: ch.opt("chapter")?.toString() ?: "0"
+                        val number = numberStr.toFloatOrNull() ?: 0f
 
                         if (chSlug.isNotEmpty()) {
                             val urlPath = "/read/$slug/$chSlug"
@@ -211,9 +212,11 @@ internal class Manhwaku(context: MangaLoaderContext) :
                         ?: JSONArray()
 
                     return (0 until imagesArray.length()).mapNotNull { i ->
-                        var imgUrl = imagesArray.optString(i, "")
-                        if (imgUrl.startsWith("/")) imgUrl = "https://$domain$imgUrl"
-                        if (imgUrl.isNotBlank()) MangaPage(generateUid(imgUrl), imgUrl, null, source) else null
+                        val imgUrl = imagesArray.optString(i, "")
+                        if (imgUrl.isNotBlank()) {
+                            val finalUrl = if (imgUrl.startsWith("/")) "https://$domain$imgUrl" else imgUrl
+                            MangaPage(generateUid(finalUrl), finalUrl, null, source)
+                        } else null
                     }
                 } catch (_: Exception) {}
             }
