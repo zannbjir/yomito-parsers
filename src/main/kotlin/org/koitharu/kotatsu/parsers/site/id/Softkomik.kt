@@ -48,8 +48,8 @@ internal class Softkomik(context: MangaLoaderContext) :
                 val json = JSONObject(res)
                 session = SessionDto(
                     ex = json.optLong("ex"),
-                    token = json.optString("token", ""),
-                    sign = json.optString("sign", "")
+                    token = json.opt("token")?.toString() ?: "",
+                    sign = json.opt("sign")?.toString() ?: ""
                 )
             }
         } catch (_: Exception) {}
@@ -79,11 +79,11 @@ internal class Softkomik(context: MangaLoaderContext) :
             ?: return emptyList()
 
         return mangaArray.mapNotNull { jo ->
-            val slug = jo.optString("title_slug", jo.optString("id", ""))
+            val slug = jo.opt("title_slug")?.toString() ?: jo.opt("id")?.toString() ?: return@mapNotNull null
             if (slug.isEmpty()) return@mapNotNull null
 
-            val title = jo.optString("title", "Untitled")
-            var cover = jo.optString("gambar", "")
+            val title = jo.opt("title")?.toString() ?: "Untitled"
+            var cover = jo.opt("gambar")?.toString() ?: ""
             if (cover.startsWith("/")) cover = "$coverCdn/$cover"
 
             Manga(
@@ -96,7 +96,7 @@ internal class Softkomik(context: MangaLoaderContext) :
                 contentRating = ContentRating.SAFE,
                 coverUrl = cover,
                 tags = emptySet(),
-                state = if (jo.optString("status", "").contains("ongoing", ignoreCase = true)) MangaState.ONGOING else MangaState.FINISHED,
+                state = if ((jo.opt("status")?.toString() ?: "").contains("ongoing", ignoreCase = true)) MangaState.ONGOING else MangaState.FINISHED,
                 authors = emptySet(),
                 source = source
             )
@@ -118,13 +118,13 @@ internal class Softkomik(context: MangaLoaderContext) :
         val tags = mutableSetOf<MangaTag>()
         detail.optJSONArray("Genre")?.let { arr ->
             for (i in 0 until arr.length()) {
-                val name = arr.optString(i, "").trim()
+                val name = arr.opt(i)?.toString()?.trim() ?: ""
                 if (name.isNotEmpty()) tags.add(MangaTag(name, name, source))
             }
         }
 
         val chapters = chaptersArray.mapNotNull { ch ->
-            val chStr = ch.optString("chapter", "0")
+            val chStr = ch.opt("chapter")?.toString() ?: "0"
             val number = chStr.toFloatOrNull() ?: 0f
             MangaChapter(
                 id = generateUid("${manga.url}-$chStr"),
@@ -140,10 +140,10 @@ internal class Softkomik(context: MangaLoaderContext) :
         }.sortedByDescending { it.number }
 
         return manga.copy(
-            description = detail.optString("sinopsis", ""),
+            description = detail.opt("sinopsis")?.toString() ?: "",
             tags = tags,
-            authors = setOfNotNull(detail.optString("author", "").takeIf { it.isNotEmpty() }),
-            state = if (detail.optString("status", "").contains("ongoing", ignoreCase = true)) MangaState.ONGOING else MangaState.FINISHED,
+            authors = setOfNotNull(detail.opt("author")?.toString()?.takeIf { it.isNotEmpty() }),
+            state = if ((detail.opt("status")?.toString() ?: "").contains("ongoing", ignoreCase = true)) MangaState.ONGOING else MangaState.FINISHED,
             chapters = chapters
         )
     }
@@ -163,7 +163,7 @@ internal class Softkomik(context: MangaLoaderContext) :
         var images = data.optJSONArray("imageSrc") ?: JSONArray()
 
         if (images.length() == 0) {
-            val id = data.optString("_id", "")
+            val id = data.opt("_id")?.toString() ?: ""
             val segments = chapter.url.split("/")
             if (segments.size >= 4) {
                 val slug = segments[2]
@@ -173,8 +173,8 @@ internal class Softkomik(context: MangaLoaderContext) :
                 try {
                     val sessionRes = webClient.httpGet("https://softkomik.co/api/sessions", baseHeaders).body?.string()
                     val sessionJson = JSONObject(sessionRes ?: "{}")
-                    val token = sessionJson.optString("token", "")
-                    val sign = sessionJson.optString("sign", "")
+                    val token = sessionJson.opt("token")?.toString() ?: ""
+                    val sign = sessionJson.opt("sign")?.toString() ?: ""
 
                     val apiHeaders = baseHeaders.newBuilder()
                         .add("X-Token", token)
@@ -192,7 +192,7 @@ internal class Softkomik(context: MangaLoaderContext) :
         val host = if (isInter2) cdnUrls[2] else cdnUrls[0]
 
         return (0 until images.length()).mapNotNull { i ->
-            val path = images.optString(i, "").removePrefix("/")
+            val path = images.opt(i)?.toString()?.removePrefix("/") ?: ""
             if (path.isNotEmpty()) MangaPage(generateUid(path), "$host/$path", null, source) else null
         }
     }
