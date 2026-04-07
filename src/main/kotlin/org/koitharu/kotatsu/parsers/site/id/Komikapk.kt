@@ -191,22 +191,20 @@ internal class Komikapk(context: MangaLoaderContext) :
         val contentRating = if (tags.any { tag -> adultKeywords.any { it in tag.title.lowercase() } })
             ContentRating.ADULT else ContentRating.SAFE 
 
-        val chapters = doc.select("a[href^='/komik/']").mapNotNull { a ->
-            val href = a.attr("href").trim()
-            val segments = href.split("/").filter { it.isNotBlank() }
-            if (segments.size < 4) return@mapNotNull null // Skip! Ini pasti link Uploader/Author
+        // MENGGUNAKAN LOGIKA KODE LAMA KAMU YANG SAKTI
+        val chapters = doc.select("a[href^='/komik/'][href*='/kmapk/']").mapNotNull { a ->
+            val chapterUrl = a.attr("href")
+            val chapterSlug = chapterUrl.split("/").lastOrNull() ?: return@mapNotNull null
+            val chapterTitle = a.text().trim()
+            
+            if (chapterTitle.isBlank()) return@mapNotNull null
 
-            val titleText = a.text().trim()
-            if (titleText.isBlank()) return@mapNotNull null
-
-            val number = parseChapterNumber(titleText)
-                ?: segments.lastOrNull()?.toFloatOrNull()
-                ?: 0f
+            val number = chapterSlug.toFloatOrNull() ?: parseChapterNumber(chapterTitle)
 
             MangaChapter(
-                id = generateUid(href),
-                title = if (titleText.isNotBlank()) titleText else "Chapter $number",
-                url = href,
+                id = generateUid(chapterUrl),
+                title = chapterTitle,
+                url = chapterUrl,
                 number = number,
                 volume = 0,
                 scanlator = null,
@@ -214,7 +212,8 @@ internal class Komikapk(context: MangaLoaderContext) :
                 branch = null,
                 source = source,
             )
-        }
+        }.distinctBy { it.url }
+         .sortedBy { it.number }
 
         return manga.copy(
             title = title,
@@ -224,51 +223,31 @@ internal class Komikapk(context: MangaLoaderContext) :
             tags = tags,
             state = state,
             contentRating = contentRating,
-            chapters = chapters.distinctBy { it.url }.sortedBy { it.number }
+            chapters = chapters,
         )
     }
 
-    private fun parseChapterNumber(name: String): Float? {
+    private fun parseChapterNumber(name: String): Float {
         val regex = Regex("""(?:chapter|ch\.?|bab)\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
-        return regex.find(name)?.groupValues?.get(1)?.toFloatOrNull()
+        val match = regex.find(name)
+        return match?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
     }
-                
+
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        // Pastikan getRequestHeaders() ikut dibawa biar gak kena blokir 403
         val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
-        val htmlString = doc.html()
-        val pages = mutableListOf<MangaPage>()
-
-        // 1. Jurus Ultimate SvelteKit (Ambil array images terakhir)
-        // Kadang di SvelteKit ada 'latestChapter' dan 'chapter', kita ambil yg terakhir (chapter saat ini)
-        val regex = Regex("""images:\s*\[(.*?)\]""", RegexOption.IGNORE_CASE)
-        val match = regex.findAll(htmlString).lastOrNull()
-        
-        if (match != null) {
-            val urlsString = match.groupValues[1]
-            val urls = urlsString.split(",")
-            
-            for (u in urls) {
-                // Bersihkan tanda kutip dari URL
-                val cleanUrl = u.replace("\"", "").replace("'", "").trim()
-                if (cleanUrl.startsWith("http")) {
-                    pages.add(MangaPage(generateUid(cleanUrl), cleanUrl, null, source))
+        return doc.select("section img[src*='.jpg'], section img[src*='.png'], section img[src*='.webp']")
+            .mapNotNull { img ->
+                val imageUrl = img.src() ?: return@mapNotNull null
+                if (imageUrl.isBlank()) {
+                    return@mapNotNull null
                 }
-            }
-        }
-
-        // 2. Jurus Sapu Bersih Jsoup (Kalau JSON gagal)
-        // Ambil SEMUA tag img yang ada di dalam tag section apapun
-        if (pages.isEmpty()) {
-            doc.select("section img").forEach { img ->
-                val imageUrl = img.attr("data-src").ifEmpty { img.attr("src") }
                 
-                if (imageUrl.isNotBlank() && imageUrl.startsWith("http")) {
-                    pages.add(MangaPage(generateUid(imageUrl), imageUrl, null, source))
-                }
-            }
-        }
-
-        return pages.distinctBy { it.url }
+                MangaPage(
+                    id = generateUid(imageUrl),
+                    url = imageUrl,
+                    preview = null,
+                    source = source,
+                )
+            }.distinctBy { it.id }
     }
 }
