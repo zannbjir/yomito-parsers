@@ -114,37 +114,37 @@ internal class MangaCloud(context: MangaLoaderContext) :
 		filter.tagsExclude.forEach { excludes.put(it.key) }
 
 		val jsonBody = JSONObject().apply {
-			put("page", page)
-			filter.query?.takeIf { it.isNotBlank() }?.let { put("title", it) }
-			filter.types.firstOrNull()?.let { type ->
-				put("type", when (type) {
-					ContentType.MANGA -> "manga"
-					ContentType.MANHWA -> "manhwa"
-					ContentType.MANHUA -> "manhua"
+			put("title", filter.query?.takeIf { it.isNotBlank() })
+			put("type", filter.types.firstOrNull()?.let { type ->
+				when (type) {
+					ContentType.MANGA -> "Manga"
+					ContentType.MANHWA -> "Manhwa"
+					ContentType.MANHUA -> "Manhua"
 					else -> null
-				})
-			}
-			filter.states.firstOrNull()?.let { state ->
-				put("status", when (state) {
-					MangaState.ONGOING -> "ongoing"
-					MangaState.FINISHED -> "completed"
-					MangaState.PAUSED -> "hiatus"
-					MangaState.ABANDONED -> "cancelled"
-					else -> null
-				})
-			}
-			order?.let {
-				put("sort", when (it) {
-					SortOrder.NEWEST -> "newest"
-					SortOrder.ALPHABETICAL -> "title_asc"
-					SortOrder.ALPHABETICAL_DESC -> "title_desc"
-					SortOrder.RELEVANCE -> "relevance"
+				}
+			})
+			put("sort", order?.let {
+				when (it) {
+					SortOrder.NEWEST -> "created_date-DESC"
+					SortOrder.ALPHABETICAL -> "title-ASC"
+					SortOrder.ALPHABETICAL_DESC -> "title-DESC"
+					SortOrder.UPDATED -> "updated_date-DESC"
 					SortOrder.RATING -> "rating"
 					else -> null
-				})
-			}
+				}
+			})
+			put("status", filter.states.firstOrNull()?.let { state ->
+				when (state) {
+					MangaState.ONGOING -> "Ongoing"
+					MangaState.FINISHED -> "Completed"
+					MangaState.PAUSED -> "Hiatus"
+					MangaState.ABANDONED -> "Cancelled"
+					else -> null
+				}
+			})
 			put("includes", includes)
 			put("excludes", excludes)
+			put("page", page)
 		}
 
 		val response = webClient.httpPost("$apiUrl/comic/browse".toHttpUrl(), jsonBody).parseJson()
@@ -160,7 +160,7 @@ internal class MangaCloud(context: MangaLoaderContext) :
 
 		val coverUrl = poster?.let {
 			if (it.startsWith("http")) it else "$cdnUrl/$it"
-		}.orEmpty()
+		}
 
 		val tags = parseTags(json.optJSONArray("tags"))
 
@@ -243,7 +243,7 @@ internal class MangaCloud(context: MangaLoaderContext) :
 			tags = tags,
 			authors = authors,
 			state = parseState(status),
-			chapters = chapters,
+			chapters = chapters.reversed(),
 		)
 	}
 
@@ -252,10 +252,10 @@ internal class MangaCloud(context: MangaLoaderContext) :
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val chapterData = JSONObject(chapter.url)
 		val chapterId = chapterData.getString("chapterId")
+		val comicId = chapterData.getString("comicId")
 
 		val response = webClient.httpGet("$apiUrl/chapter/$chapterId").parseJson()
 		val data = response.getJSONObject("data")
-		val comicId = data.getString("comicId")
 		val images = data.getJSONArray("images")
 
 		return (0 until images.length()).map { i ->

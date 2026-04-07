@@ -47,23 +47,24 @@ internal class DilarTube(context: MangaLoaderContext) :
             }
         }
 
-        // Search: use quick_search
+        // Search: use quick_search — response is a JSONArray of categories
         val url = "https://dilar.tube/api/search/quick_search"
         val jsonBody = JSONObject().apply {
             put("query", filter.query)
             put("includes", JSONArray())
         }
 
-        val response = webClient.httpPost(url.toHttpUrl(), jsonBody).parseJson()
-        val rows = when {
-            response.has("rows") -> response.getJSONArray("rows")
-            response.has("series") -> response.getJSONArray("series")
-            response.has("data") -> response.optJSONArray("data") ?: JSONArray()
-            else -> JSONArray()
+        val response = webClient.httpPost(url.toHttpUrl(), jsonBody).parseJsonArray()
+        for (i in 0 until response.length()) {
+            val category = response.getJSONObject(i)
+            if (category.optString("class") == "Manga") {
+                val data = category.getJSONArray("data")
+                return (0 until data.length()).map { j ->
+                    parseMangaFromJson(data.getJSONObject(j))
+                }
+            }
         }
-        return (0 until rows.length()).map { i ->
-            parseMangaFromJson(rows.getJSONObject(i))
-        }
+        return emptyList()
     }
 
     private fun parseMangaFromJson(json: JSONObject): Manga {

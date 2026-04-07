@@ -178,7 +178,7 @@ internal class ElderManga(context: MangaLoaderContext):
             result.groups[1]?.value?.let { url ->
                 MangaPage(
                     id = generateUid(url),
-                    url = "${cdnSuffix.trimEnd('/')}/series/$url",
+                    url = "${cdnSuffix.trimEnd('/')}/$url",
                     preview = null,
                     source = source,
                 )

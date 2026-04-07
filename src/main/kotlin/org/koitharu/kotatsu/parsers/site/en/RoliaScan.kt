@@ -155,7 +155,9 @@ internal class RoliaScan(context: MangaLoaderContext) : PagedMangaParser(context
                 statusText.contains("completed", true) -> MangaState.FINISHED
                 else -> null
             },
-            chapters = allChapters.reversed()
+            chapters = allChapters.reversed().mapIndexed { index, chapter ->
+                chapter.copy(number = (index + 1).toFloat())
+            }
         )
     }
 
