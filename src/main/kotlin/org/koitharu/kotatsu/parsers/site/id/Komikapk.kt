@@ -191,23 +191,29 @@ internal class Komikapk(context: MangaLoaderContext) :
         val contentRating = if (tags.any { tag -> adultKeywords.any { it in tag.title.lowercase() } })
             ContentRating.ADULT else ContentRating.SAFE 
 
-        // MENGGUNAKAN LOGIKA KODE LAMA KAMU YANG SAKTI
-        val chapters = doc.select("a[href^='/komik/'][href*='/kmapk/']").mapNotNull { a ->
-            val chapterUrl = a.attr("href")
-            val chapterSlug = chapterUrl.split("/").lastOrNull() ?: return@mapNotNull null
-            val chapterTitle = a.text().trim()
-            
-            if (chapterTitle.isBlank()) return@mapNotNull null
+        // --- PERBAIKAN: Tangkap Semua Jenis Uploader Secara Dinamis ---
+        val chapters = doc.select("a[href^='/komik/']").mapNotNull { a ->
+            val href = a.attr("href").trim()
+            val segments = href.split("/").filter { it.isNotBlank() }
 
-            val number = chapterSlug.toFloatOrNull() ?: parseChapterNumber(chapterTitle)
+            if (segments.size < 4) return@mapNotNull null 
+            
+            val uploaderSlug = segments[2] 
+            val titleText = a.text().trim()
+            
+            if (titleText.isBlank()) return@mapNotNull null
+
+            val number = parseChapterNumber(titleText)
+                ?: segments.lastOrNull()?.toFloatOrNull()
+                ?: 0f
 
             MangaChapter(
-                id = generateUid(chapterUrl),
-                title = chapterTitle,
-                url = chapterUrl,
+                id = generateUid(href),
+                title = if (titleText.isNotBlank()) titleText else "Chapter $number",
+                url = href,
                 number = number,
                 volume = 0,
-                scanlator = null,
+                scanlator = uploaderSlug, // <-- Ajaib! Nama uploader bakal nongol di Kotatsu
                 uploadDate = 0L,
                 branch = null,
                 source = source,
