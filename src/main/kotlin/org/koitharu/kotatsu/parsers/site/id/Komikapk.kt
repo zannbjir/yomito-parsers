@@ -172,35 +172,30 @@ internal class Komikapk(context: MangaLoaderContext) :
         }.distinctBy { it.id }
     }
 
-       override suspend fun getDetails(manga: Manga): Manga {
+    override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl, getRequestHeaders()).parseHtml()
         val title = doc.selectFirst("h1.font-label")?.text()?.trim() ?: manga.title
         val cover = doc.selectFirst("img.h-\\[200px\\]")?.src() ?: manga.coverUrl
         val description = doc.selectFirst("div.font-display.mt-5.text-center")?.text()?.trim() ?: ""
-
         val tags = doc.select("a[href^='/pustaka/semua/'][href*='/terbaru/']").mapNotNull { a ->
             val tagSlug = a.attr("href").split("/").getOrNull(3) ?: return@mapNotNull null
             MangaTag(title = a.text().trim(), key = tagSlug, source = source)
         }.toSet()
-
         val state = if (doc.html().contains("completed", ignoreCase = true) ||
                        doc.html().contains("tamat", ignoreCase = true))
             MangaState.FINISHED else MangaState.ONGOING
-
         val adultKeywords = listOf("adult", "mature", "smut", "ecchi", "hentai", "18+", "nakadashi", "rape", "incest", "milf", "loli", "shota", "futanari", "gangbang", "creampie", "ntr")
         val contentRating = if (tags.any { tag -> adultKeywords.any { it in tag.title.lowercase() } })
-            ContentRating.ADULT else ContentRating.SAFE 
+            ContentRating.ADULT else ContentRating.SAFE
 
-        // --- PERBAIKAN: Tangkap Semua Jenis Uploader Secara Dinamis ---
+        // Chapter parsing dengan uploader
         val chapters = doc.select("a[href^='/komik/']").mapNotNull { a ->
             val href = a.attr("href").trim()
             val segments = href.split("/").filter { it.isNotBlank() }
+            if (segments.size < 4) return@mapNotNull null
 
-            if (segments.size < 4) return@mapNotNull null 
-            
-            val uploaderSlug = segments[2] 
+            val uploaderSlug = segments[2]   // uploader ada di index ke-2
             val titleText = a.text().trim()
-            
             if (titleText.isBlank()) return@mapNotNull null
 
             val number = parseChapterNumber(titleText)
@@ -213,13 +208,13 @@ internal class Komikapk(context: MangaLoaderContext) :
                 url = href,
                 number = number,
                 volume = 0,
-                scanlator = uploaderSlug, // <-- Ajaib! Nama uploader bakal nongol di Kotatsu
+                scanlator = uploaderSlug,
                 uploadDate = 0L,
                 branch = null,
                 source = source,
             )
         }.distinctBy { it.url }
-         .sortedBy { it.number }
+         .sortedByDescending { it.number }   // terbaru di atas
 
         return manga.copy(
             title = title,
@@ -233,21 +228,24 @@ internal class Komikapk(context: MangaLoaderContext) :
         )
     }
 
-    private fun parseChapterNumber(name: String): Float {
+    private fun parseChapterNumber(name: String): Float? {
         val regex = Regex("""(?:chapter|ch\.?|bab)\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
-        val match = regex.find(name)
-        return match?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
+        return regex.find(name)?.groupValues?.get(1)?.toFloatOrNull()
     }
-
+       
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
+        val headers = getRequestHeaders().newBuilder()
+            .add("Referer", "https://$domain/")
+            .add("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            .build()
+
+        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), headers).parseHtml()
+
         return doc.select("section img[src*='.jpg'], section img[src*='.png'], section img[src*='.webp']")
             .mapNotNull { img ->
                 val imageUrl = img.src() ?: return@mapNotNull null
-                if (imageUrl.isBlank()) {
-                    return@mapNotNull null
-                }
-                
+                if (imageUrl.isBlank() || !imageUrl.contains("cdn-guard")) return@mapNotNull null
+
                 MangaPage(
                     id = generateUid(imageUrl),
                     url = imageUrl,
