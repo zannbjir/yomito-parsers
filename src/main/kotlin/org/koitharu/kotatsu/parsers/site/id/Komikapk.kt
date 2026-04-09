@@ -214,7 +214,7 @@ internal class Komikapk(context: MangaLoaderContext) :
                 source = source,
             )
         }.distinctBy { it.url }
-         .sortedByDescending { it.number }   // terbaru di atas
+         .sortedBy { it.number }   // terbaru di atas
 
         return manga.copy(
             title = title,
