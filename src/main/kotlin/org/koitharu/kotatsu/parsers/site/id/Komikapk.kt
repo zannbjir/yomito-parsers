@@ -234,17 +234,21 @@ internal class Komikapk(context: MangaLoaderContext) :
     }
        
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+        val chapterUrl = chapter.url.toAbsoluteUrl(domain)
+
+        // Header lebih kuat + Referer chapter (penting buat cdn-guard)
         val headers = getRequestHeaders().newBuilder()
-            .add("Referer", "https://$domain/")
+            .add("Referer", chapterUrl)
             .add("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
             .build()
 
-        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), headers).parseHtml()
+        val doc = webClient.httpGet(chapterUrl, headers).parseHtml()
 
-        return doc.select("section img[src*='.jpg'], section img[src*='.png'], section img[src*='.webp']")
+        // Selector yang lebih kuat & pasti nangkep semua gambar
+        return doc.select("img[src*='cdn-guard'], img[src*='komikapk2-chapter'], section img")
             .mapNotNull { img ->
-                val imageUrl = img.src() ?: return@mapNotNull null
-                if (imageUrl.isBlank() || !imageUrl.contains("cdn-guard")) return@mapNotNull null
+                val imageUrl = img.src() ?: img.attr("data-src") ?: return@mapNotNull null
+                if (imageUrl.isBlank()) return@mapNotNull null
 
                 MangaPage(
                     id = generateUid(imageUrl),
