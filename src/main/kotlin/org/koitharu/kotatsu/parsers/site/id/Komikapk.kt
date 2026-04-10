@@ -234,28 +234,34 @@ internal class Komikapk(context: MangaLoaderContext) :
     }
        
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val chapterUrl = chapter.url.toAbsoluteUrl(domain)
+    val chapterUrl = chapter.url.toAbsoluteUrl(domain)
+    val doc = webClient.httpGet(chapterUrl, getRequestHeaders()).parseHtml()
 
-        // Header lebih kuat + Referer chapter (penting buat cdn-guard)
-        val headers = getRequestHeaders().newBuilder()
-            .add("Referer", chapterUrl)
-            .add("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
-            .build()
+    // Ambil dari JSON di script SvelteKit
+    val scriptContent = doc.select("script").map { it.data() }
+        .firstOrNull { it.contains("\"images\"") && it.contains("chapter") } ?: ""
 
-        val doc = webClient.httpGet(chapterUrl, headers).parseHtml()
+    // Extract array images dari JSON
+    val imagesJson = Regex(""""images":\s*\[([^\]]+)\]""")
+        .find(scriptContent)?.groupValues?.get(1) ?: ""
 
-        // Selector yang lebih kuat & pasti nangkep semua gambar
-        return doc.select("img[src*='cdn-guard'], img[src*='komikapk2-chapter'], section img")
+    val urls = Regex(""""(https?://[^"]+\.webp)"""")
+        .findAll(imagesJson)
+        .map { it.groupValues[1] }
+        .toList()
+
+    // Fallback ke img selector kalau JSON kosong
+    if (urls.isEmpty()) {
+        return doc.select("img[src*='cdn-guard'], img[src*='chapter'], section img")
             .mapNotNull { img ->
                 val imageUrl = img.src() ?: img.attr("data-src") ?: return@mapNotNull null
                 if (imageUrl.isBlank()) return@mapNotNull null
-
-                MangaPage(
-                    id = generateUid(imageUrl),
-                    url = imageUrl,
-                    preview = null,
-                    source = source,
-                )
+                MangaPage(id = generateUid(imageUrl), url = imageUrl, preview = null, source = source)
             }.distinctBy { it.id }
     }
+
+    return urls.map { url ->
+        MangaPage(id = generateUid(url), url = url, preview = null, source = source)
+    }.distinctBy { it.id }
+  }
 }
