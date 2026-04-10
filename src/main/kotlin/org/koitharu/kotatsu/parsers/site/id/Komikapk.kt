@@ -243,50 +243,41 @@ internal class Komikapk(context: MangaLoaderContext) :
 
     val doc = webClient.httpGet(chapterUrl, headers).parseHtml()
 
-    // 1. Cari img dengan src asli (bukan loading.gif)
-    val realImages = doc.select("section img, img[alt*='image-komik']")
-        .mapNotNull { img ->
-            val src = img.src() ?: img.attr("data-src")
-            if (src.isNullOrBlank() || src.contains("loading.gif")) return@mapNotNull null
-            MangaPage(id = generateUid(src), url = src, preview = null, source = source)
-        }.distinctBy { it.id }
+    // 1. Coba ambil gambar asli (src bukan loading.gif)
+    val imgElements = doc.select("section img, img[alt*='image-komik']")
+    val realPages = imgElements.mapNotNull { img ->
+        val src = img.src() ?: img.attr("data-src") ?: return@mapNotNull null
+        if (src.contains("loading.gif") || src.isBlank()) return@mapNotNull null
+        MangaPage(id = generateUid(src), url = src, preview = null, source = source)
+    }
+    if (realPages.isNotEmpty()) return realPages
 
-    if (realImages.isNotEmpty()) return realImages
-
-    // 2. Fallback: ekstrak total halaman dari alt text gambar placeholder
-    val totalFromAlt = doc.select("section img[alt*='image-komik']").lastOrNull()
-        ?.attr("alt")
-        ?.substringAfterLast("/")
-        ?.toIntOrNull()
-
-    // 3. Atau dari script JSON
-    val totalFromScript = run {
-        val scriptData = doc.select("script").map { it.data() }
-            .firstOrNull { it.contains("images") && it.contains("chapterOrder") } ?: ""
-        Regex(""""images":\s*\[([^\]]+)\]""")
-            .find(scriptData)
-            ?.groupValues?.get(1)
-            ?.split(",")
-            ?.size
+    // 2. Fallback: gunakan jumlah elemen img (meskipun placeholder)
+    val totalFromCount = imgElements.size
+    if (totalFromCount > 0) {
+        val segments = chapter.url.split("/").filter { it.isNotBlank() }
+        // Format: /komik/{comicSlug}/{uploaderSlug}/{chapterName}
+        val comicSlug = segments.getOrNull(1) ?: return emptyList()
+        val chapterName = segments.getOrNull(3) ?: return emptyList()
+        return (0 until totalFromCount).map { i ->
+            val url = "https://s1.cdn-guard.com/komikapk2-chapter/$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
+            MangaPage(id = generateUid(url), url = url, preview = null, source = source)
+        }
     }
 
-    val totalImages = totalFromAlt ?: totalFromScript ?: return emptyList()
-
-    // 4. Ambil slug komik dan chapter dari URL
-    val segments = chapter.url.split("/").filter { it.isNotBlank() }
-    // segments = [komik, comicSlug, uploaderSlug, chapterName]
-    val comicSlug = segments.getOrNull(1) ?: return emptyList()
-    val chapterName = segments.getOrNull(3) ?: return emptyList()
-
-    // 5. Bangun URL gambar
-    return (0 until totalImages).map { i ->
-        val imageUrl = "https://s1.cdn-guard.com/komikapk2-chapter/$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
-        MangaPage(
-            id = generateUid(imageUrl),
-            url = imageUrl,
-            preview = null,
-            source = source,
-        )
+    // 3. Terakhir, coba ekstrak total halaman dari alt text (contoh: "...-32/33")
+    val altLast = imgElements.lastOrNull()?.attr("alt")
+    val totalFromAlt = altLast?.substringAfterLast("/")?.toIntOrNull()
+    if (totalFromAlt != null && totalFromAlt > 0) {
+        val segments = chapter.url.split("/").filter { it.isNotBlank() }
+        val comicSlug = segments.getOrNull(1) ?: return emptyList()
+        val chapterName = segments.getOrNull(3) ?: return emptyList()
+        return (0 until totalFromAlt).map { i ->
+            val url = "https://s1.cdn-guard.com/komikapk2-chapter/$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
+            MangaPage(id = generateUid(url), url = url, preview = null, source = source)
+        }
     }
+
+    return emptyList()
 }
     }
