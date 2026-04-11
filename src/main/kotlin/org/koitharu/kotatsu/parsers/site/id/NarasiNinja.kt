@@ -1,6 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.id
 
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -82,7 +83,7 @@ internal class NarasiNinjaParser(context: MangaLoaderContext) :
             .add("Referer", "https://$domain/komik")
             .build()
 
-        return webClient.httpPost(url, body, headers).parseHtml()
+        return webClient.httpPost(url.toHttpUrl(), body, headers).parseHtml()
     }
 
     // ── LIST PAGE ─────────────────────────────────────────────────────────────
