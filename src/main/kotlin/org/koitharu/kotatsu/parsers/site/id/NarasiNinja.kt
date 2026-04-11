@@ -1,5 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.id
 
+import okhttp3.Headers
 import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -74,12 +75,12 @@ internal class NarasiNinjaParser(context: MangaLoaderContext) :
 
         val body = bodyParts.joinToString("&")
 
-        val headers = mapOf(
-            "X-CSRF-TOKEN" to csrf,
-            "X-Requested-With" to "XMLHttpRequest",
-            "Content-Type" to "application/x-www-form-urlencoded",
-            "Referer" to "https://$domain/komik",
-        )
+        val headers = Headers.Builder()
+            .add("X-CSRF-TOKEN", csrf)
+            .add("X-Requested-With", "XMLHttpRequest")
+            .add("Content-Type", "application/x-www-form-urlencoded")
+            .add("Referer", "https://$domain/komik")
+            .build()
 
         return webClient.httpPost(url, body, headers).parseHtml()
     }
