@@ -44,10 +44,10 @@ internal class Yurilabs(context: MangaLoaderContext) :
         val statusText = doc.selectFirst(".post-content_item:contains(Status) .summary-content")?.text()?.trim()
         val status = when (statusText?.lowercase()) {
             "ongoing" -> MangaState.ONGOING
-            "completed" -> MangaState.COMPLETED
-            else -> MangaState.UNKNOWN
+            "completed" -> MangaState.FINISHED
+            else -> null
         }
-
+        
         // === AMBIL SEMUA CHAPTER via AJAX + Pagination ===
         val mangaId = doc.selectFirst("#manga-chapters-holder")?.attr("data-id")
             ?: return result // fallback kalau tidak ketemu
@@ -95,8 +95,7 @@ internal class Yurilabs(context: MangaLoaderContext) :
         return result.copy(
             description = description,
             tags = tags,
-            authors = author?.let { setOf(it) } ?: emptySet(),
-            artists = artist?.let { setOf(it) } ?: emptySet(),
+            authors = setOfNotNull(author, artist?.takeIf { it != author }),
             state = status,
             chapters = finalChapters
         )
