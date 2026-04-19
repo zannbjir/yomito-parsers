@@ -16,7 +16,6 @@ import java.util.Locale
 
 private const val KOMIKUCC_CDN = "https://cdn.komiku.cc/"
 
-
 @MangaSourceParser("KOMIKUCC", "Komiku.cc", "id")
 internal class Komikucc(context: MangaLoaderContext) :
 	PagedMangaParser(context, MangaParserSource.KOMIKUCC, 20) {
@@ -25,10 +24,8 @@ internal class Komikucc(context: MangaLoaderContext) :
 
 	private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZZZZZ", Locale.ROOT)
 
-	// RSC header wajib untuk Next.js RSC endpoint
 	private fun rscHeaders(): Headers = Headers.Builder()
 		.add("rsc", "1")
-		.add("Next-Router-State-Tree", "%5B%22%22%2C%7B%22children%22%3A%5B%22(site)%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%5D%7D%5D%7D%2Cnull%2Cnull%2Ctrue%5D")
 		.add("Referer", "https://$domain/")
 		.add("Accept", "text/x-component")
 		.build()
@@ -46,49 +43,53 @@ internal class Komikucc(context: MangaLoaderContext) :
 	)
 
 	override suspend fun getFilterOptions() = MangaListFilterOptions(
-		availableTags = fetchAvailableTags(),
+		availableTags = getAvailableTags(),
 		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED, MangaState.PAUSED),
 		availableContentTypes = EnumSet.of(ContentType.MANGA, ContentType.MANHWA, ContentType.MANHUA),
 	)
 
-	// ============================== List ==================================
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		// Search pakai endpoint berbeda (non-RSC, HTML biasa)
-		if (filter is MangaListFilter.Search) {
-			return searchManga(filter.query)
+		// Search pakai endpoint HTML biasa
+		if (!filter.query.isNullOrEmpty()) {
+			return searchManga(filter.query!!)
 		}
 
 		val urlBuilder = "https://$domain/list".toHttpUrl().newBuilder()
 
-		if (filter is MangaListFilter.Advanced) {
-			filter.states.oneOrThrowIfMany()?.let {
-				urlBuilder.addQueryParameter("status", when (it) {
+		filter.states.oneOrThrowIfMany()?.let {
+			urlBuilder.addQueryParameter(
+				"status",
+				when (it) {
 					MangaState.ONGOING -> "ongoing"
 					MangaState.FINISHED -> "completed"
 					MangaState.PAUSED -> "hiatus"
 					else -> return@let
-				})
-			}
-			filter.types.oneOrThrowIfMany()?.let {
-				urlBuilder.addQueryParameter("type", when (it) {
+				},
+			)
+		}
+		filter.types.oneOrThrowIfMany()?.let {
+			urlBuilder.addQueryParameter(
+				"type",
+				when (it) {
 					ContentType.MANGA -> "manga"
 					ContentType.MANHWA -> "manhwa"
 					ContentType.MANHUA -> "manhua"
 					else -> return@let
-				})
-			}
-			filter.tags.forEach { tag ->
-				urlBuilder.addQueryParameter("genre[]", tag.key)
-			}
+				},
+			)
 		}
-
-		urlBuilder.addQueryParameter("order", when (order) {
-			SortOrder.ALPHABETICAL -> "title"
-			SortOrder.NEWEST -> "latest"
-			SortOrder.POPULARITY -> "popular"
-			else -> "update"
-		})
-
+		filter.tags.forEach { tag ->
+			urlBuilder.addQueryParameter("genre[]", tag.key)
+		}
+		urlBuilder.addQueryParameter(
+			"order",
+			when (order) {
+				SortOrder.ALPHABETICAL -> "title"
+				SortOrder.NEWEST -> "latest"
+				SortOrder.POPULARITY -> "popular"
+				else -> "update"
+			},
+		)
 		if (page > 1) urlBuilder.addQueryParameter("page", page.toString())
 
 		val body = webClient.httpGet(urlBuilder.build(), rscHeaders()).parseRaw()
@@ -149,9 +150,7 @@ internal class Komikucc(context: MangaLoaderContext) :
 		}
 	}
 
-	// =========================== Manga Details ============================
 	override suspend fun getDetails(manga: Manga): Manga {
-		// Detail page: fetch HTML biasa dulu untuk status/cover/desc
 		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
 
 		val statusText = doc.selectFirst(".bg-gray-100.text-gray-800")?.ownText()?.trim()
@@ -172,7 +171,6 @@ internal class Komikucc(context: MangaLoaderContext) :
 		val description = doc.select("p.line-clamp-4").joinToString("\n") { it.ownText().trim() }
 		val cover = doc.selectFirst("img.object-cover")?.absUrl("src")
 
-		// Chapter list: fetch via RSC endpoint (sama URL, beda header)
 		val chapterBody = webClient.httpGet(manga.url.toAbsoluteUrl(domain), rscHeaders()).parseRaw()
 		val chapters = parseChapterListFromRsc(chapterBody)
 
@@ -196,7 +194,6 @@ internal class Komikucc(context: MangaLoaderContext) :
 				val obj = arr.optJSONObject(i) ?: return@mapNotNull null
 				val link = obj.optString("link").ifBlank { return@mapNotNull null }
 				val title = obj.optString("title").ifBlank { return@mapNotNull null }
-				// updated_at lebih reliable dari created_at
 				val dateStr = obj.optString("updated_at").ifBlank { obj.optString("created_at") }
 				MangaChapter(
 					id = generateUid(link),
@@ -215,7 +212,6 @@ internal class Komikucc(context: MangaLoaderContext) :
 		}
 	}
 
-	// =============================== Pages ================================
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val body = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), rscHeaders()).parseRaw()
 		val imagesJson = extractRscKey(body, "images") ?: return emptyList()
@@ -235,9 +231,8 @@ internal class Komikucc(context: MangaLoaderContext) :
 		}
 	}
 
-	// ====================== Tags ==========================================
-	private suspend fun fetchAvailableTags(): Set<MangaTag> {
-		// Genres tersedia di RSC response dari /list
+	// Private, bukan override
+	private suspend fun getAvailableTags(): Set<MangaTag> {
 		val body = webClient.httpGet("https://$domain/list", rscHeaders()).parseRaw()
 		val genresJson = extractRscKey(body, "genres") ?: return emptySet()
 		return try {
@@ -260,22 +255,15 @@ internal class Komikucc(context: MangaLoaderContext) :
 		for (line in body.lineSequence()) {
 			val colonIdx = line.indexOf(':')
 			if (colonIdx < 0) continue
-
-			// Skip prefix numerik
-			val prefix = line.substring(0, colonIdx)
-			if (!prefix.all { it.isDigit() }) continue
-
+			// Prefix harus numeric
+			if (!line.substring(0, colonIdx).all { it.isDigit() }) continue
 			val content = line.substring(colonIdx + 1).trim()
-			if (content.isEmpty()) continue
-
-			if (content.startsWith("{")) {
-				try {
-					val obj = JSONObject(content)
-					if (obj.has(key)) {
-						return obj.get(key).toString()
-					}
-				} catch (_: Exception) {
-				}
+			if (!content.startsWith("{")) continue
+			try {
+				val obj = JSONObject(content)
+				if (obj.has(key)) return obj.get(key).toString()
+			} catch (_: Exception) {
+				continue
 			}
 		}
 		return null
