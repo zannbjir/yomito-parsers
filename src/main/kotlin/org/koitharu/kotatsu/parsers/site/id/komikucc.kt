@@ -16,6 +16,7 @@ import java.util.Locale
 
 private const val KOMIKUCC_CDN = "https://cdn.komiku.cc/"
 
+
 @MangaSourceParser("KOMIKUCC", "Komiku.cc", "id")
 internal class Komikucc(context: MangaLoaderContext) :
 	PagedMangaParser(context, MangaParserSource.KOMIKUCC, 20) {
@@ -28,6 +29,12 @@ internal class Komikucc(context: MangaLoaderContext) :
 		.add("rsc", "1")
 		.add("Referer", "https://$domain/")
 		.add("Accept", "text/x-component")
+		.build()
+
+	// Header biasa untuk detail/chapter page — tidak perlu RSC header
+	private fun normalHeaders(): Headers = Headers.Builder()
+		.add("Referer", "https://$domain/")
+		.add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		.build()
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
@@ -48,50 +55,39 @@ internal class Komikucc(context: MangaLoaderContext) :
 		availableContentTypes = EnumSet.of(ContentType.MANGA, ContentType.MANHWA, ContentType.MANHUA),
 	)
 
+	// ============================== List ==================================
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		// Search pakai endpoint HTML biasa
 		if (!filter.query.isNullOrEmpty()) {
 			return searchManga(filter.query!!)
 		}
 
 		val urlBuilder = "https://$domain/list".toHttpUrl().newBuilder()
-
 		filter.states.oneOrThrowIfMany()?.let {
-			urlBuilder.addQueryParameter(
-				"status",
-				when (it) {
-					MangaState.ONGOING -> "ongoing"
-					MangaState.FINISHED -> "completed"
-					MangaState.PAUSED -> "hiatus"
-					else -> return@let
-				},
-			)
+			urlBuilder.addQueryParameter("status", when (it) {
+				MangaState.ONGOING -> "ongoing"
+				MangaState.FINISHED -> "completed"
+				MangaState.PAUSED -> "hiatus"
+				else -> return@let
+			})
 		}
 		filter.types.oneOrThrowIfMany()?.let {
-			urlBuilder.addQueryParameter(
-				"type",
-				when (it) {
-					ContentType.MANGA -> "manga"
-					ContentType.MANHWA -> "manhwa"
-					ContentType.MANHUA -> "manhua"
-					else -> return@let
-				},
-			)
+			urlBuilder.addQueryParameter("type", when (it) {
+				ContentType.MANGA -> "manga"
+				ContentType.MANHWA -> "manhwa"
+				ContentType.MANHUA -> "manhua"
+				else -> return@let
+			})
 		}
-		filter.tags.forEach { tag ->
-			urlBuilder.addQueryParameter("genre[]", tag.key)
-		}
-		urlBuilder.addQueryParameter(
-			"order",
-			when (order) {
-				SortOrder.ALPHABETICAL -> "title"
-				SortOrder.NEWEST -> "latest"
-				SortOrder.POPULARITY -> "popular"
-				else -> "update"
-			},
-		)
+		filter.tags.forEach { tag -> urlBuilder.addQueryParameter("genre[]", tag.key) }
+		urlBuilder.addQueryParameter("order", when (order) {
+			SortOrder.ALPHABETICAL -> "title"
+			SortOrder.NEWEST -> "latest"
+			SortOrder.POPULARITY -> "popular"
+			else -> "update"
+		})
 		if (page > 1) urlBuilder.addQueryParameter("page", page.toString())
 
+		// /list pakai RSC headers
 		val body = webClient.httpGet(urlBuilder.build(), rscHeaders()).parseRaw()
 		return parseMangaListFromRsc(body)
 	}
@@ -100,7 +96,7 @@ internal class Komikucc(context: MangaLoaderContext) :
 		val url = "https://$domain/search".toHttpUrl().newBuilder()
 			.addQueryParameter("q", query.trim())
 			.build()
-		val doc = webClient.httpGet(url).parseHtml()
+		val doc = webClient.httpGet(url, normalHeaders()).parseHtml()
 		return doc.select("a[href*=/komik/]").mapNotNull { element ->
 			val href = element.absUrl("href")
 			val slug = href.toHttpUrl().pathSegments.getOrNull(1) ?: return@mapNotNull null
@@ -122,36 +118,42 @@ internal class Komikucc(context: MangaLoaderContext) :
 	}
 
 	private fun parseMangaListFromRsc(body: String): List<Manga> {
-		val dataJson = extractRscKey(body, "data") ?: return emptyList()
-		return try {
-			val arr = JSONArray(dataJson)
-			(0 until arr.length()).mapNotNull { i ->
-				val obj = arr.optJSONObject(i) ?: return@mapNotNull null
-				val link = obj.optString("link").ifBlank { return@mapNotNull null }
-				val title = obj.optString("title").ifBlank { return@mapNotNull null }
-				val img = obj.optString("img")
-				Manga(
-					id = generateUid(link),
-					url = link,
-					publicUrl = "https://$domain$link",
-					title = title,
-					altTitles = emptySet(),
-					rating = RATING_UNKNOWN,
-					contentRating = null,
-					coverUrl = img.toAbsoluteCdnUrl(),
-					tags = emptySet(),
-					state = null,
-					authors = emptySet(),
-					source = source,
-				)
+		// Strategy 1: cari JSON object yang punya key "data" berisi array
+		val dataJson = extractRscJsonKey(body, "data")
+		if (dataJson != null) {
+			return try {
+				val arr = JSONArray(dataJson)
+				(0 until arr.length()).mapNotNull { i ->
+					val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+					val link = obj.optString("link").ifBlank { return@mapNotNull null }
+					val title = obj.optString("title").ifBlank { return@mapNotNull null }
+					val img = obj.optString("img")
+					Manga(
+						id = generateUid(link),
+						url = link,
+						publicUrl = "https://$domain$link",
+						title = title,
+						altTitles = emptySet(),
+						rating = RATING_UNKNOWN,
+						contentRating = null,
+						coverUrl = img.toAbsoluteCdnUrl(),
+						tags = emptySet(),
+						state = null,
+						authors = emptySet(),
+						source = source,
+					)
+				}
+			} catch (_: Exception) {
+				emptyList()
 			}
-		} catch (_: Exception) {
-			emptyList()
 		}
+		return emptyList()
 	}
 
+	// =========================== Manga Details ============================
 	override suspend fun getDetails(manga: Manga): Manga {
-		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
+		// Detail page: fetch HTML biasa — tidak pakai RSC header
+		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain), normalHeaders()).parseHtml()
 
 		val statusText = doc.selectFirst(".bg-gray-100.text-gray-800")?.ownText()?.trim()
 		val state = when (statusText) {
@@ -170,9 +172,8 @@ internal class Komikucc(context: MangaLoaderContext) :
 		val author = doc.selectFirst("span:contains(author:) + span")?.ownText()?.trim()
 		val description = doc.select("p.line-clamp-4").joinToString("\n") { it.ownText().trim() }
 		val cover = doc.selectFirst("img.object-cover")?.absUrl("src")
-
 		val chapterBody = webClient.httpGet(manga.url.toAbsoluteUrl(domain), rscHeaders()).parseRaw()
-		val chapters = parseChapterListFromRsc(chapterBody)
+		val chapters = parseChapterListFromNextJs(chapterBody)
 
 		return manga.copy(
 			description = description.ifBlank { null },
@@ -185,8 +186,13 @@ internal class Komikucc(context: MangaLoaderContext) :
 		)
 	}
 
-	private fun parseChapterListFromRsc(body: String): List<MangaChapter> {
-		val chaptersJson = extractRscKey(body, "chapters") ?: return emptyList()
+
+	private fun parseChapterListFromNextJs(body: String): List<MangaChapter> {
+		// Coba dua cara: RSC key lookup dan deep scan
+		val chaptersJson = extractRscJsonKey(body, "chapters")
+			?: extractDeepScanKey(body, "chapters")
+			?: return emptyList()
+
 		return try {
 			val arr = JSONArray(chaptersJson)
 			val total = arr.length()
@@ -212,9 +218,13 @@ internal class Komikucc(context: MangaLoaderContext) :
 		}
 	}
 
+	// =============================== Pages ================================
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val body = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), rscHeaders()).parseRaw()
-		val imagesJson = extractRscKey(body, "images") ?: return emptyList()
+		val imagesJson = extractRscJsonKey(body, "images")
+			?: extractDeepScanKey(body, "images")
+			?: return emptyList()
+
 		return try {
 			val arr = JSONArray(imagesJson)
 			(0 until arr.length()).mapNotNull { i ->
@@ -231,10 +241,10 @@ internal class Komikucc(context: MangaLoaderContext) :
 		}
 	}
 
-	// Private, bukan override
+	// ====================== Tags ==========================================
 	private suspend fun getAvailableTags(): Set<MangaTag> {
 		val body = webClient.httpGet("https://$domain/list", rscHeaders()).parseRaw()
-		val genresJson = extractRscKey(body, "genres") ?: return emptySet()
+		val genresJson = extractRscJsonKey(body, "genres") ?: return emptySet()
 		return try {
 			val arr = JSONArray(genresJson)
 			val tags = mutableSetOf<MangaTag>()
@@ -250,12 +260,10 @@ internal class Komikucc(context: MangaLoaderContext) :
 		}
 	}
 
-
-	private fun extractRscKey(body: String, key: String): String? {
+	private fun extractRscJsonKey(body: String, key: String): String? {
 		for (line in body.lineSequence()) {
 			val colonIdx = line.indexOf(':')
 			if (colonIdx < 0) continue
-			// Prefix harus numeric
 			if (!line.substring(0, colonIdx).all { it.isDigit() }) continue
 			val content = line.substring(colonIdx + 1).trim()
 			if (!content.startsWith("{")) continue
@@ -264,6 +272,56 @@ internal class Komikucc(context: MangaLoaderContext) :
 				if (obj.has(key)) return obj.get(key).toString()
 			} catch (_: Exception) {
 				continue
+			}
+		}
+		return null
+	}
+
+
+	private fun extractDeepScanKey(body: String, key: String): String? {
+		for (line in body.lineSequence()) {
+			val colonIdx = line.indexOf(':')
+			if (colonIdx < 0) continue
+			if (!line.substring(0, colonIdx).all { it.isDigit() }) continue
+			val content = line.substring(colonIdx + 1).trim()
+
+			// Coba sebagai array (RSC children arrays)
+			if (content.startsWith("[")) {
+				try {
+					val result = searchInJsonArray(JSONArray(content), key)
+					if (result != null) return result
+				} catch (_: Exception) {
+				}
+			}
+
+			// Coba sebagai object
+			if (content.startsWith("{")) {
+				try {
+					val result = searchInJsonObject(JSONObject(content), key)
+					if (result != null) return result
+				} catch (_: Exception) {
+				}
+			}
+		}
+		return null
+	}
+
+	private fun searchInJsonObject(obj: JSONObject, key: String): String? {
+		if (obj.has(key)) return obj.get(key).toString()
+		for (k in obj.keys()) {
+			when (val v = obj.get(k)) {
+				is JSONObject -> searchInJsonObject(v, key)?.let { return it }
+				is JSONArray -> searchInJsonArray(v, key)?.let { return it }
+			}
+		}
+		return null
+	}
+
+	private fun searchInJsonArray(arr: JSONArray, key: String): String? {
+		for (i in 0 until arr.length()) {
+			when (val v = arr.get(i)) {
+				is JSONObject -> searchInJsonObject(v, key)?.let { return it }
+				is JSONArray -> searchInJsonArray(v, key)?.let { return it }
 			}
 		}
 		return null
