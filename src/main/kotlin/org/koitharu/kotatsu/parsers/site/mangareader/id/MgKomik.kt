@@ -9,7 +9,6 @@ import org.koitharu.kotatsu.parsers.util.*
 import java.text.SimpleDateFormat
 import java.util.EnumSet
 
-
 @MangaSourceParser("MGKOMIK", "MgKomik", "id")
 internal class Mgkomik(context: MangaLoaderContext) :
 	MangaReaderParser(context, MangaParserSource.MGKOMIK, "web.mgkomik.cc", pageSize = 20, searchPageSize = 10) {
@@ -18,8 +17,6 @@ internal class Mgkomik(context: MangaLoaderContext) :
 	override val selectPage = "div#readerarea img"
 	override val selectTestScript = "script:containsData(thisIsNeverFound)"
 	override val listUrl = "/komik/"
-
-	// Madara/MangaThemesia standard selectors
 	override val selectMangaList = ".utao .uta .imgu, .listupd .bs .bsx, .listo .bs .bsx"
 	override val selectMangaListImg = "img"
 	override val selectMangaListTitle = "a"
@@ -32,7 +29,7 @@ internal class Mgkomik(context: MangaLoaderContext) :
 		)
 
 	override suspend fun getFilterOptions() = MangaListFilterOptions(
-		availableTags = fetchAvailableTags(),
+		availableTags = getAvailableTags(),
 		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
 		availableContentTypes = EnumSet.of(ContentType.MANGA, ContentType.MANHWA, ContentType.MANHUA),
 	)
@@ -41,68 +38,56 @@ internal class Mgkomik(context: MangaLoaderContext) :
 		val url = buildString {
 			append("https://")
 			append(domain)
-			when (filter) {
-				is MangaListFilter.Search -> {
-					// Search pakai path berbeda di Madara
-					append("/?s=")
-					append(filter.query.urlEncoded())
-					append("&post_type=manga")
+			if (!filter.query.isNullOrEmpty()) {
+				append("/?s=")
+				append(filter.query!!.urlEncoded())
+				append("&post_type=manga")
+			} else {
+				append(listUrl)
+				if (page > 1) {
+					append("page/")
+					append(page)
+					append("/")
 				}
-				is MangaListFilter.Advanced -> {
-					append(listUrl)
-					if (page > 1) {
-						append("page/")
-						append(page)
-						append("/")
-					}
-					append("?")
-					filter.states.oneOrThrowIfMany()?.let {
-						append("status=")
-						append(when (it) {
+				append("?")
+				filter.states.oneOrThrowIfMany()?.let {
+					append("status=")
+					append(
+						when (it) {
 							MangaState.ONGOING -> "ongoing"
 							MangaState.FINISHED -> "completed"
 							else -> ""
-						})
-						append("&")
-					}
-					filter.types.oneOrThrowIfMany()?.let {
-						append("type=")
-						append(when (it) {
+						},
+					)
+					append("&")
+				}
+				filter.types.oneOrThrowIfMany()?.let {
+					append("type=")
+					append(
+						when (it) {
 							ContentType.MANGA -> "Manga"
 							ContentType.MANHWA -> "Manhwa"
 							ContentType.MANHUA -> "Manhua"
 							else -> ""
-						})
-						append("&")
-					}
-					filter.tags.forEach { tag ->
-						append("genre[]=")
-						append(tag.key)
-						append("&")
-					}
-					append("order=")
-					append(when (order) {
+						},
+					)
+					append("&")
+				}
+				filter.tags.forEach { tag ->
+					append("genre[]=")
+					append(tag.key)
+					append("&")
+				}
+				append("order=")
+				append(
+					when (order) {
 						SortOrder.POPULARITY -> "popular"
 						SortOrder.NEWEST -> "latest"
 						SortOrder.ALPHABETICAL -> "title"
 						SortOrder.ALPHABETICAL_DESC -> "titlereverse"
 						else -> "update"
-					})
-				}
-				else -> {
-					append(listUrl)
-					if (page > 1) {
-						append("page/")
-						append(page)
-						append("/")
-					}
-					append("?order=")
-					append(when (order) {
-						SortOrder.POPULARITY -> "popular"
-						SortOrder.NEWEST -> "latest"
-						else -> "update"
-					})
-				}
+					},
+				)
 			}
 		}
 		return parseMangaList(webClient.httpGet(url).parseHtml())
@@ -112,12 +97,14 @@ internal class Mgkomik(context: MangaLoaderContext) :
 		return docs.select(selectMangaList).mapNotNull { element ->
 			val a = element.selectFirst("a") ?: return@mapNotNull null
 			val relativeUrl = a.attrAsRelativeUrl("href").toRelativeUrl(domain)
+			val title = a.attr("title").trim().ifEmpty {
+				element.selectFirst(".tt, h3, h4")?.text()?.trim()
+					?: return@mapNotNull null
+			}
 			Manga(
 				id = generateUid(relativeUrl),
 				url = relativeUrl,
-				title = a.attr("title").trim().ifEmpty {
-					element.selectFirst(".tt, h3, h4")?.text()?.trim() ?: return@mapNotNull null
-				},
+				title = title,
 				altTitles = emptySet(),
 				publicUrl = a.attrAsAbsoluteUrl("href"),
 				rating = RATING_UNKNOWN,
@@ -137,7 +124,7 @@ internal class Mgkomik(context: MangaLoaderContext) :
 
 		val chapters = docs.select(selectChapter).mapChapters(reversed = true) { index, element ->
 			val a = element.selectFirst("a") ?: return@mapChapters null
-			val url = a.attrAsRelativeUrl("href")
+			val url = a.attrAsRelativeUrl("href").toRelativeUrl(domain)
 			val title = element.select(".lch a, .chapternum").text().ifBlank { a.text() }.trim()
 			val dateText = element.selectFirst(".chapterdate")?.text()
 			MangaChapter(
@@ -179,6 +166,7 @@ internal class Mgkomik(context: MangaLoaderContext) :
 			statusText.contains("ongoing", ignoreCase = true) -> MangaState.ONGOING
 			statusText.contains("completed", ignoreCase = true) ||
 				statusText.contains("tamat", ignoreCase = true) -> MangaState.FINISHED
+			statusText.contains("hiatus", ignoreCase = true) -> MangaState.PAUSED
 			else -> null
 		}
 
@@ -202,7 +190,8 @@ internal class Mgkomik(context: MangaLoaderContext) :
 		)
 	}
 
-	override suspend fun fetchAvailableTags(): Set<MangaTag> {
+	// Private, bukan override
+	private suspend fun getAvailableTags(): Set<MangaTag> {
 		val doc = webClient.httpGet("https://$domain$listUrl").parseHtml()
 		return doc.select("ul.genrez li").mapNotNullToSet { li ->
 			val value = li.selectFirst("input[type=checkbox]")?.attr("value") ?: return@mapNotNullToSet null
