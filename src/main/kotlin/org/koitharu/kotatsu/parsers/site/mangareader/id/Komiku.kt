@@ -30,7 +30,7 @@ internal class Komiku(context: MangaLoaderContext) :
 		)
 
 	override suspend fun getFilterOptions() = MangaListFilterOptions(
-		availableTags = fetchAvailableTags(),
+		availableTags = getAvailableTags(),
 		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
 		availableContentTypes = EnumSet.of(
 			ContentType.MANGA,
@@ -42,67 +42,54 @@ internal class Komiku(context: MangaLoaderContext) :
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
 		val url = buildString {
 			append("https://")
-			when (filter) {
-				is MangaListFilter.Search -> {
-					// Search pakai api domain
-					append(apiDomain)
-					append("/page/")
+			// query tidak null = search mode
+			if (!filter.query.isNullOrEmpty()) {
+				append(apiDomain)
+				append("/page/")
+				append(page.toString())
+				append("/?post_type=manga&s=")
+				append(filter.query!!.urlEncoded())
+			} else {
+				append(apiDomain)
+				append(listUrl)
+				if (page > 1) {
+					append("page/")
 					append(page.toString())
-					append("/?post_type=manga&s=")
-					append(filter.query.urlEncoded())
+					append("/")
 				}
-				is MangaListFilter.Advanced -> {
-					append(apiDomain)
-					append(listUrl)
-					if (page > 1) {
-						append("page/")
-						append(page.toString())
-						append("/")
-					}
-					append("?orderby=")
-					append(when (order) {
+				append("?orderby=")
+				append(
+					when (order) {
 						SortOrder.ALPHABETICAL, SortOrder.ALPHABETICAL_DESC -> "title"
 						SortOrder.NEWEST -> "date"
 						SortOrder.POPULARITY -> "meta_value_num"
 						else -> "modified"
-					})
-					filter.tags.oneOrThrowIfMany()?.let {
-						append("&genre=")
-						append(it.key)
-					}
-					filter.types.oneOrThrowIfMany()?.let {
-						append("&tipe=")
-						append(when (it) {
+					},
+				)
+				filter.tags.oneOrThrowIfMany()?.let {
+					append("&genre=")
+					append(it.key)
+				}
+				filter.types.oneOrThrowIfMany()?.let {
+					append("&tipe=")
+					append(
+						when (it) {
 							ContentType.MANGA -> "manga"
 							ContentType.MANHWA -> "manhwa"
 							ContentType.MANHUA -> "manhua"
 							else -> ""
-						})
-					}
-					filter.states.oneOrThrowIfMany()?.let {
-						append("&statusmanga=")
-						append(when (it) {
+						},
+					)
+				}
+				filter.states.oneOrThrowIfMany()?.let {
+					append("&statusmanga=")
+					append(
+						when (it) {
 							MangaState.ONGOING -> "ongoing"
 							MangaState.FINISHED -> "end"
 							else -> ""
-						})
-					}
-				}
-				else -> {
-					// Default: latest/popular
-					append(apiDomain)
-					append(listUrl)
-					if (page > 1) {
-						append("page/")
-						append(page.toString())
-						append("/")
-					}
-					append("?orderby=")
-					append(when (order) {
-						SortOrder.POPULARITY -> "meta_value_num"
-						SortOrder.NEWEST -> "date"
-						else -> "modified"
-					})
+						},
+					)
 				}
 			}
 		}
@@ -211,7 +198,8 @@ internal class Komiku(context: MangaLoaderContext) :
 		)
 	}
 
-	override suspend fun fetchAvailableTags(): Set<MangaTag> {
+
+	private suspend fun getAvailableTags(): Set<MangaTag> {
 		val doc = webClient.httpGet("https://$apiDomain/").parseHtml()
 		val tags = mutableSetOf<MangaTag>()
 		doc.select("select[name='genre'] option").forEach { option ->
