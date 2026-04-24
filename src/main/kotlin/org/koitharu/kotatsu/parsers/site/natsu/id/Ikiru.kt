@@ -13,7 +13,13 @@ import org.koitharu.kotatsu.parsers.util.toTitleCase
 internal class Ikiru(context: MangaLoaderContext) :
 	NatsuParser(context, MangaParserSource.IKIRU, pageSize = 24) {
 
-	override val configKeyDomain = ConfigKey.Domain("02.ikiru.wtf")
+	override val configKeyDomain = ConfigKey.Domain(
+		"04.ikiru.wtf",
+		"03.ikiru.wtf",
+		"02.ikiru.wtf",
+		"01.ikiru.wtf",
+		"ikiru.wtf",
+	)
 
 	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
 		super.onCreateConfig(keys)
