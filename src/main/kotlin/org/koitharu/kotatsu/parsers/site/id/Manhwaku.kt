@@ -164,16 +164,21 @@ internal class Manhwaku(context: MangaLoaderContext) :
     }
 
     // Image hosts behind the chapter pages (imageainewgeneration.lol / himmga.lat /
-    // gaimgame.pics, plus rotating mirrors). They reject requests when both Origin and
-    // Referer are present, and also reject Referer without a trailing slash. Force a
-    // safe Referer and strip Origin so chapter images don't return 403 randomly.
+    // gaimgame.pics, plus rotating mirrors). Behaviour differs across hosts:
+    //   - imageainewgeneration.lol / himmga.lat: accept both no-referer and Referer:
+    //     https://manhwaku.biz.id/ (with trailing slash). Reject without trailing slash
+    //     or with Origin + Referer combo.
+    //   - gaimgame.pics: rejects ANY Referer header (returns 403). Accepts no-referer.
+    // The page itself uses referrerPolicy="no-referrer" on every chapter image, so the
+    // safest universal fix is to strip Origin + Referer entirely for all non-manhwaku
+    // hosts.
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val host = request.url.host
         if (!host.endsWith(domain)) {
             val rebuilt = request.newBuilder()
                 .removeHeader("Origin")
-                .header("Referer", "https://$domain/")
+                .removeHeader("Referer")
                 .build()
             return chain.proceed(rebuilt)
         }

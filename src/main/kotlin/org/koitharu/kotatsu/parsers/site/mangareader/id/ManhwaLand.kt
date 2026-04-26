@@ -14,7 +14,9 @@ import org.koitharu.kotatsu.parsers.model.MangaParserSource
 import org.koitharu.kotatsu.parsers.model.MangaTag
 import org.koitharu.kotatsu.parsers.model.SortOrder
 import org.koitharu.kotatsu.parsers.site.mangareader.MangaReaderParser
+import org.koitharu.kotatsu.parsers.util.generateUid
 import org.koitharu.kotatsu.parsers.util.parseHtml
+import org.koitharu.kotatsu.parsers.util.parseJson
 import org.koitharu.kotatsu.parsers.util.urlEncoded
 
 @MangaSourceParser("MANHWALAND", "ManhwaLand.vip", "id", ContentType.HENTAI)
@@ -49,11 +51,54 @@ internal class ManhwaLand(context: MangaLoaderContext) :
     }
 
     // Default MangaReaderParser fetches `/manga` to build the tag map during getDetails().
-    // That URL is hard-blocked by Cloudflare on this domain, which makes the detail page
-    // hit CF challenges in a loop after the user already solved CF for /manga/<slug>/. Skip
-    // the tag map entirely so detail fetching only needs the single CF clearance for the
-    // manga page itself.
+    // That URL is hard-blocked by Cloudflare on this domain. Skip it.
     override suspend fun getOrCreateTagMap(): Map<String, MangaTag> = emptyMap()
+
+    // The `/manga/<slug>/` detail page is also Cloudflare-blocked (and even when CF clears,
+    // the page sometimes returns the archive listing instead of the chapter list). Individual
+    // chapter pages (`/<slug>-chapter-N/`) are NOT CF-blocked and the live AJAX search
+    // endpoint also bypasses CF, so we use the search to recover the chapter count and
+    // construct chapter URLs directly.
+    override suspend fun getDetails(manga: Manga): Manga {
+        val slug = manga.url.trim('/').removePrefix("manga/").trim('/')
+        val query = slug.replace('-', ' ').take(40).urlEncoded()
+        val ajaxUrl = "https://$domain/wp-admin/admin-ajax.php"
+        val payload = "action=ts_ac_do_search&ts_ac_query=$query"
+        val response = webClient.httpPost(ajaxUrl, payload).parseJson()
+
+        var totalChapters = 0
+        var entryTitle = manga.title
+        val series = response.optJSONArray("series")
+        outer@ for (i in 0 until (series?.length() ?: 0)) {
+            val all = series!!.optJSONObject(i)?.optJSONArray("all") ?: continue
+            for (j in 0 until all.length()) {
+                val entry = all.getJSONObject(j)
+                val link = entry.optString("post_link")
+                if (link.contains("/manga/$slug/") || link.endsWith("/$slug/")) {
+                    totalChapters = entry.optString("post_latest").toIntOrNull() ?: 0
+                    entryTitle = entry.optString("post_title").ifBlank { entryTitle }
+                    break@outer
+                }
+            }
+        }
+
+        val chapters = (1..totalChapters).map { num ->
+            val urlPath = "/$slug-chapter-$num/"
+            MangaChapter(
+                id = generateUid(urlPath),
+                title = "Chapter $num",
+                url = urlPath,
+                number = num.toFloat(),
+                volume = 0,
+                scanlator = null,
+                uploadDate = 0L,
+                branch = null,
+                source = source,
+            )
+        }
+
+        return manga.copy(title = entryTitle, chapters = chapters)
+    }
 
     // Paksa semua gambar pakai HTTPS
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
