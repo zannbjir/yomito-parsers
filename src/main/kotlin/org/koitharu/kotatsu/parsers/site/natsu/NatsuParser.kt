@@ -1,9 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.natsu
 
 import okhttp3.Headers
-import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
-import okhttp3.Request
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONArray
 import org.jsoup.nodes.Document
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -24,7 +22,6 @@ import org.koitharu.kotatsu.parsers.model.RATING_UNKNOWN
 import org.koitharu.kotatsu.parsers.model.SortOrder
 import org.koitharu.kotatsu.parsers.util.attrAsAbsoluteUrl
 import org.koitharu.kotatsu.parsers.util.attrAsRelativeUrl
-import org.koitharu.kotatsu.parsers.util.await
 import org.koitharu.kotatsu.parsers.util.generateUid
 import org.koitharu.kotatsu.parsers.util.mapNotNullToSet
 import org.koitharu.kotatsu.parsers.util.parseHtml
@@ -174,7 +171,13 @@ internal abstract class NatsuParser(
             formParts["query"] = filter.query
         }
 
-        val html = httpPost(url, formParts)
+        val extraHeaders = Headers.headersOf(
+            "Referer", "https://${domain}/advanced-search/",
+            "Origin", "https://${domain}",
+            "X-Requested-With", "XMLHttpRequest",
+            "Accept", "*/*",
+        )
+        val html = webClient.httpPost(url.toHttpUrl(), formParts, extraHeaders).parseHtml()
         return parseMangaList(html)
     }
 
@@ -445,33 +448,4 @@ internal abstract class NatsuParser(
         }
     }
 
-    // Utils
-    private val multipartHttpClient by lazy {
-        OkHttpClient.Builder()
-            .build()
-    }
-
-    protected open suspend fun httpPost(url: String, form: Map<String, String>, extraHeaders: Headers? = null): Document {
-        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-        form.forEach { (k, v) -> body.addFormDataPart(k, v) }
-
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .post(body.build())
-            .addHeader("Referer", "https://${domain}/advanced-search/")
-            .addHeader("Origin", "https://${domain}")
-
-        if (extraHeaders != null) {
-            for (name in extraHeaders.names()) {
-                if (!name.equals("Content-Type", ignoreCase = true)) {
-                    val value = extraHeaders[name] ?: continue
-                    requestBuilder.addHeader(name, value)
-                }
-            }
-        }
-
-        val request = requestBuilder.build()
-        val response = multipartHttpClient.newCall(request).await()
-        return response.parseHtml()
-    }
 }

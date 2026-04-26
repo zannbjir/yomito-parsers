@@ -9,13 +9,12 @@ import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
-import org.koitharu.kotatsu.parsers.util.json.*
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
 @MangaSourceParser("SOFTKOMIK", "Softkomik", "id")
 internal class Softkomik(context: MangaLoaderContext) :
-    PagedMangaParser(context, MangaParserSource.SOFTKOMIK, pageSize = 20) {
+    PagedMangaParser(context, MangaParserSource.SOFTKOMIK, pageSize = 24) {
 
     override val configKeyDomain = ConfigKey.Domain("softkomik.co")
 
@@ -49,38 +48,31 @@ internal class Softkomik(context: MangaLoaderContext) :
     private val sessionCache = ConcurrentHashMap<String, SessionDto>()
 
     private suspend fun getSession(endpoint: String): SessionDto {
-        sessionCache[endpoint]?.takeIf { it.ex > System.currentTimeMillis() }?.let { return it }
+        sessionCache[endpoint]?.takeIf { it.ex > System.currentTimeMillis() + 30_000L }?.let { return it }
 
-        // Warm up cookies dulu
-        val siteHeaders = Headers.Builder()
+        val headers = Headers.Builder()
+            .add("Accept", "application/json")
             .add("Referer", "https://$domain/")
             .add("Origin", "https://$domain")
             .build()
-        runCatching { webClient.httpGet("https://$domain", siteHeaders) }
-
-        val apiHeaders = Headers.Builder()
-            .add("Accept", "application/json")
-            .add("Content-Type", "application/json")
-            .add("X-Requested-With", "XMLHttpRequest")
-            .add("Referer", "https://$domain/")
-            .build()
-        val res = webClient.httpGet("https://$domain$endpoint", apiHeaders).parseJson()
+        val res = webClient.httpGet("https://$domain$endpoint", headers).parseJson()
+        // The sign is returned as `<hex>|<suffix>` — the server only uses the hex prefix.
+        val rawSign = res.optString("sign", "")
         val session = SessionDto(
-            ex = res.optLong("ex", System.currentTimeMillis() + 7_200_000L),
+            ex = res.optLong("ex", System.currentTimeMillis() + 60_000L),
             token = res.optString("token", ""),
-            sign = res.optString("sign", ""),
+            sign = rawSign.substringBefore('|'),
         )
         sessionCache[endpoint] = session
         return session
     }
 
-    private suspend fun getChapterListSession(): SessionDto = getSession("/api/sessions/kajsijas")
-    private suspend fun getChapterImageSession(): SessionDto = getSession("/api/sessions/chapter")
+    private suspend fun getListSession(): SessionDto = getSession("/api/session/amsnuy")
+    private suspend fun getChapterImageSession(): SessionDto = getSession("/api/session/chapter/iuisxs")
 
     // ── LIST PAGE ─────────────────────────────────────────────────────────────
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-        // Search menggunakan API langsung
         if (!filter.query.isNullOrEmpty()) {
             return searchByQuery(filter.query, page)
         }
@@ -89,99 +81,85 @@ internal class Softkomik(context: MangaLoaderContext) :
         val url = "https://$domain/komik/library?sortBy=$sortBy&page=$page"
 
         val headers = Headers.Builder()
-            .add("rsc", "1")
             .add("Referer", "https://$domain/")
-            .add("Origin", "https://$domain")
             .build()
 
-        val responseText = webClient.httpGet(url, headers).body?.string() ?: return emptyList()
-
-        // Next.js RSC response — cari JSON embedded di dalamnya
-        val libData = extractNextJsData(responseText, "data", "maxPage") ?: return emptyList()
-
+        val doc = webClient.httpGet(url, headers).parseHtml()
+        val pageProps = extractPageProps(doc) ?: return emptyList()
+        val libData = pageProps.optJSONObject("libData") ?: pageProps
         val dataArray = libData.optJSONArray("data") ?: return emptyList()
-        return dataArray.mapJSON { jo ->
-            val slug = jo.optString("title_slug", "").ifEmpty { jo.optString("id", "") }
-            if (slug.isEmpty()) return@mapJSON null
-            val gambar = jo.optString("gambar", "").removePrefix("/")
-            Manga(
-                id = generateUid(slug),
-                title = jo.optString("title", "Untitled"),
-                altTitles = emptySet(),
-                url = "/komik/$slug",
-                publicUrl = "https://$domain/komik/$slug",
-                rating = RATING_UNKNOWN,
-                contentRating = ContentRating.SAFE,
-                coverUrl = if (gambar.isNotEmpty()) "$coverUrl/$gambar" else "",
-                tags = emptySet(),
-                state = parseStatus(jo.optString("status")),
-                authors = emptySet(),
-                source = source,
-            )
-        }.filterNotNull()
+        return parseListData(dataArray)
     }
 
     private suspend fun searchByQuery(query: String, page: Int): List<Manga> {
-        val session = getChapterListSession()
-        val url = "$apiUrl/komik?name=${query.urlEncoded()}&search=true&limit=20&page=$page"
+        val session = getListSession()
+        val url = "$apiUrl/komik?name=${query.urlEncoded()}&search=true&limit=24&page=$page"
         val headers = Headers.Builder()
             .add("X-Token", session.token)
             .add("X-Sign", session.sign)
             .add("Accept", "application/json")
             .add("Referer", "https://$domain/")
+            .add("Origin", "https://$domain")
             .build()
         val json = webClient.httpGet(url, headers).parseJson()
         val dataArray = json.optJSONArray("data") ?: return emptyList()
-        return dataArray.mapJSON { jo ->
-            val slug = jo.optString("title_slug", "")
-            if (slug.isEmpty()) return@mapJSON null
+        return parseListData(dataArray)
+    }
+
+    private fun parseListData(dataArray: JSONArray): List<Manga> {
+        val result = ArrayList<Manga>(dataArray.length())
+        for (i in 0 until dataArray.length()) {
+            val jo = dataArray.optJSONObject(i) ?: continue
+            val slug = jo.optString("title_slug", "").ifEmpty { jo.optString("id", "") }
+            if (slug.isEmpty()) continue
             val gambar = jo.optString("gambar", "").removePrefix("/")
-            Manga(
-                id = generateUid(slug),
-                title = jo.optString("title", "Untitled"),
-                altTitles = emptySet(),
-                url = "/komik/$slug",
-                publicUrl = "https://$domain/komik/$slug",
-                rating = RATING_UNKNOWN,
-                contentRating = ContentRating.SAFE,
-                coverUrl = if (gambar.isNotEmpty()) "$coverUrl/$gambar" else "",
-                tags = emptySet(),
-                state = parseStatus(jo.optString("status")),
-                authors = emptySet(),
-                source = source,
+            result.add(
+                Manga(
+                    id = generateUid(slug),
+                    title = jo.optString("title", "Untitled"),
+                    altTitles = emptySet(),
+                    url = "/$slug",
+                    publicUrl = "https://$domain/$slug",
+                    rating = RATING_UNKNOWN,
+                    contentRating = ContentRating.SAFE,
+                    coverUrl = if (gambar.isNotEmpty()) "$coverUrl/$gambar" else "",
+                    tags = emptySet(),
+                    state = parseStatus(jo.optString("status")),
+                    authors = emptySet(),
+                    source = source,
+                ),
             )
-        }.filterNotNull()
+        }
+        return result
     }
 
     // ── DETAILS ───────────────────────────────────────────────────────────────
 
     override suspend fun getDetails(manga: Manga): Manga {
-        val rscHdrs = Headers.Builder()
-            .add("rsc", "1")
+        val headers = Headers.Builder()
             .add("Referer", "https://$domain/")
-            .add("Origin", "https://$domain")
             .build()
-        val responseText = webClient.httpGet(manga.publicUrl, rscHdrs).body?.string() ?: return manga
+        val doc = webClient.httpGet(manga.publicUrl, headers).parseHtml()
 
-        val detail = extractNextJsData(responseText, "title", "sinopsis") ?: return manga
+        val pageProps = extractPageProps(doc)
+        val detail = pageProps?.optJSONObject("data")
 
-        val title = detail.optString("title", manga.title)
-        val gambar = detail.optString("gambar", "").removePrefix("/")
+        val title = detail?.optString("title")?.takeIf { it.isNotBlank() } ?: manga.title
+        val gambar = detail?.optString("gambar", "")?.removePrefix("/") ?: ""
         val coverImg = if (gambar.isNotEmpty()) "$coverUrl/$gambar" else manga.coverUrl
-        val description = detail.optString("sinopsis", "").takeIf { it.isNotBlank() }
-        val author = detail.optString("author", "").takeIf { it.isNotBlank() }
-        val state = parseStatus(detail.optString("status"))
+        val description = detail?.optString("sinopsis")?.takeIf { it.isNotBlank() }
+        val author = detail?.optString("author")?.takeIf { it.isNotBlank() }
+        val state = parseStatus(detail?.optString("status"))
 
         val tags = LinkedHashSet<MangaTag>()
-        detail.optJSONArray("Genre")?.let { arr ->
+        detail?.optJSONArray("Genre")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val name = arr.optString(i, "").trim()
                 if (name.isNotEmpty()) tags.add(MangaTag(name, name.lowercase(), source))
             }
         }
 
-        // Chapter list dari API
-        val slug = manga.url.removePrefix("/komik/").removeSuffix("/")
+        val slug = manga.url.trim('/').substringBefore('/')
         val chapters = fetchChapterList(slug, manga.url)
 
         return manga.copy(
@@ -196,13 +174,14 @@ internal class Softkomik(context: MangaLoaderContext) :
     }
 
     private suspend fun fetchChapterList(slug: String, mangaUrl: String): List<MangaChapter> {
-        val session = getChapterListSession()
+        val session = getListSession()
         val url = "$apiUrl/komik/$slug/chapter?limit=9999999"
         val headers = Headers.Builder()
             .add("X-Token", session.token)
             .add("X-Sign", session.sign)
             .add("Accept", "application/json")
             .add("Referer", "https://$domain/")
+            .add("Origin", "https://$domain")
             .build()
 
         val json = webClient.httpGet(url, headers).parseJson()
@@ -214,11 +193,12 @@ internal class Softkomik(context: MangaLoaderContext) :
             val chStr = ch.optString("chapter", "")
             if (chStr.isEmpty()) continue
             val number = chStr.substringBefore(".").toFloatOrNull() ?: continue
+            val chapterUrl = "/${slug}/chapter/$chStr"
             chapters.add(
                 MangaChapter(
-                    id = generateUid("$mangaUrl/chapter/$chStr"),
+                    id = generateUid(chapterUrl),
                     title = "Chapter ${formatChapterDisplay(chStr)}",
-                    url = "$mangaUrl/chapter/$chStr",
+                    url = chapterUrl,
                     number = number,
                     volume = 0,
                     scanlator = null,
@@ -228,41 +208,39 @@ internal class Softkomik(context: MangaLoaderContext) :
                 ),
             )
         }
-        chapters.sortByDescending { it.number }
+        chapters.sortBy { it.number }
         return chapters
     }
 
     // ── PAGES ─────────────────────────────────────────────────────────────────
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val rscHdrs = Headers.Builder()
-            .add("rsc", "1")
+        val headers = Headers.Builder()
             .add("Referer", "https://$domain/")
-            .add("Origin", "https://$domain")
             .build()
-        val responseText = webClient.httpGet(
-            "https://$domain${chapter.url}", rscHdrs,
-        ).body?.string() ?: return emptyList()
+        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), headers).parseHtml()
 
-        val data = extractNextJsData(responseText, "_id", "imageSrc") ?: return emptyList()
+        val pageProps = extractPageProps(doc)
+        val data = pageProps?.optJSONObject("data")
+        val komik = data?.optJSONObject("komik")
+        val chapterData = data?.optJSONObject("data")
 
-        var imageSrc = data.optJSONArray("imageSrc") ?: JSONArray()
+        val slug = chapter.url.trim('/').substringBefore("/chapter/")
+        val chNum = chapter.url.substringAfterLast("/chapter/").trim('/')
 
-        // Kalau kosong, fetch dari API gambar
+        var imageSrc = chapterData?.optJSONArray("imageSrc") ?: JSONArray()
+        val isInter2 = chapterData?.optBoolean("storageInter2", false) ?: false
+
         if (imageSrc.length() == 0) {
-            val id = data.optString("_id", "")
-            val parts = chapter.url.removePrefix("/komik/").split("/chapter/")
-            if (parts.size == 2 && id.isNotEmpty()) {
-                val chSlug = parts[0]
-                val chNum = parts[1]
-                imageSrc = fetchChapterImages(chSlug, chNum, id)
-            }
+            val id = chapterData?.optString("_id")
+                ?: komik?.optString("_id")
+                ?: return emptyList()
+            imageSrc = fetchChapterImages(slug, chNum, id)
         }
 
         if (imageSrc.length() == 0) return emptyList()
 
-        val isInter2 = data.optBoolean("storageInter2", false)
-        val host = if (isInter2) cdnUrls[2] else cdnUrls[0]
+        val host = if (isInter2) cdnUrls[1] else cdnUrls[0]
 
         return (0 until imageSrc.length()).mapNotNull { i ->
             val path = imageSrc.optString(i, "").removePrefix("/")
@@ -279,12 +257,13 @@ internal class Softkomik(context: MangaLoaderContext) :
     private suspend fun fetchChapterImages(slug: String, chapter: String, id: String): JSONArray {
         return try {
             val session = getChapterImageSession()
-            val url = "$apiUrl/komik/$slug/chapter/$chapter/img/$id"
+            val url = "$apiUrl/komik/$slug/chapter/$chapter/imgs/$id"
             val headers = Headers.Builder()
                 .add("X-Token", session.token)
                 .add("X-Sign", session.sign)
                 .add("Accept", "application/json")
-                .add("Referer", "https://$domain/")
+                .add("Referer", "https://$domain/$slug/chapter/$chapter")
+                .add("Origin", "https://$domain")
                 .build()
             val json = webClient.httpGet(url, headers).parseJson()
             json.optJSONArray("imageSrc") ?: JSONArray()
@@ -316,43 +295,11 @@ internal class Softkomik(context: MangaLoaderContext) :
         return if (suffix.isNotEmpty()) "$formatted.$suffix" else formatted
     }
 
-    private fun extractNextJsData(text: String, vararg requiredKeys: String): JSONObject? {
-        val nextDataRegex = Regex("""<script id="__NEXT_DATA__"[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
-        nextDataRegex.find(text)?.groupValues?.get(1)?.let { raw ->
-            runCatching {
-                val json = JSONObject(raw)
-                val pageProps = json.optJSONObject("props")?.optJSONObject("pageProps")
-                if (pageProps != null && requiredKeys.all { pageProps.has(it) }) return pageProps
-                // Coba di pageProps.data atau pageProps.manga
-                pageProps?.optJSONObject("manga")?.let { m ->
-                    if (requiredKeys.all { m.has(it) }) return m
-                }
-                pageProps?.optJSONObject("res")?.let { r ->
-                    if (requiredKeys.all { r.has(it) }) return r
-                }
-            }
-        }
-
-        // Fallback: cari JSON object di RSC payload yang berisi semua required key
-        // RSC format: setiap baris bisa berupa "0:{...}" atau "1:{...}" dsb
-        val jsonObjectRegex = Regex("""\{[^{}]*"${requiredKeys.first()}"[^{}]*\}""")
-        for (match in jsonObjectRegex.findAll(text)) {
-            runCatching {
-                val obj = JSONObject(match.value)
-                if (requiredKeys.all { obj.has(it) }) return obj
-            }
-        }
-
-        // Coba parse seluruh blob JSON besar yang sering ada di RSC response
-        val bigJsonRegex = Regex("""(\{".{1,30}":"[^"]{0,200}",".{1,30}":.+\})""")
-        for (match in bigJsonRegex.findAll(text)) {
-            runCatching {
-                val obj = JSONObject(match.value)
-                if (requiredKeys.all { obj.has(it) }) return obj
-            }
-        }
-
-        return null
+    private fun extractPageProps(doc: org.jsoup.nodes.Document): JSONObject? {
+        val raw = doc.selectFirst("script#__NEXT_DATA__")?.data() ?: return null
+        return runCatching {
+            JSONObject(raw).optJSONObject("props")?.optJSONObject("pageProps")
+        }.getOrNull()
     }
 }
 
