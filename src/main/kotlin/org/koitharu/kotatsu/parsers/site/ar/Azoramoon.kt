@@ -1,15 +1,16 @@
 package org.koitharu.kotatsu.parsers.site.ar
 
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.nodes.Document
+import org.jsoup.parser.Parser
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
+import org.koitharu.kotatsu.parsers.util.json.toJSONObjectOrNull
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -123,13 +124,16 @@ internal class Azoramoon(context: MangaLoaderContext) :
 
 			// Parse genres
 			val genresArray = obj.optJSONArray("genres")
+			var isNovel = false
 			val tags = if (genresArray != null) {
 				buildSet {
 					for (idx in 0 until genresArray.length()) {
 						val genre = genresArray.getJSONObject(idx)
+						val genreName = genre.getString("name")
+						if (genreName == "رواية") isNovel = true
 						add(MangaTag(
 							key = genre.getInt("id").toString(),
-							title = genre.getString("name"),
+							title = genreName,
 							source = source,
 						))
 					}
@@ -137,6 +141,14 @@ internal class Azoramoon(context: MangaLoaderContext) :
 			} else {
 				emptySet()
 			}
+
+			if (obj.optString("postType") == "رواية" || obj.optString("type") == "رواية") isNovel = true
+
+			if (obj.optString("seriesType").equals("NOVEL", ignoreCase = true)) isNovel = true
+
+			if (slug.contains("novel", ignoreCase = true)) isNovel = true
+
+			if (isNovel) continue
 
 			result.add(
 				Manga(
@@ -262,9 +274,17 @@ internal class Azoramoon(context: MangaLoaderContext) :
 		)
 	}
 
-	override suspend fun getDetails(manga: Manga): Manga = coroutineScope {
+	override suspend fun getDetails(manga: Manga): Manga {
 		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
-		val chaptersDeferred = async { loadChapters(manga.url) }
+
+		if (doc.selectFirst("span.inline-block.border.text-foreground")?.text() == "رواية") {
+			return manga.copy(
+				state = MangaState.FINISHED,
+				chapters = emptyList(),
+			)
+		}
+
+		val chapters = loadChapters(manga, doc)
 
 		val coverUrl = doc.selectFirst("section img")?.src() ?: manga.coverUrl
 
@@ -302,112 +322,110 @@ internal class Azoramoon(context: MangaLoaderContext) :
 			}
 		}
 
-		manga.copy(
+		return manga.copy(
 			coverUrl = coverUrl,
 			rating = rating,
 			state = state,
 			tags = tags,
 			description = description,
-			chapters = chaptersDeferred.await(),
+			chapters = chapters,
 		)
 	}
 
-	private suspend fun loadChapters(mangaUrl: String): List<MangaChapter> {
-		val doc = webClient.httpGet(mangaUrl.toAbsoluteUrl(domain)).parseHtml()
+	private fun loadChapters(manga: Manga, doc: Document): List<MangaChapter> {
+		val seriesSlug = manga.url.substringAfter("/series/", "").substringBefore('/')
+		if (seriesSlug.isEmpty()) return emptyList()
 
-		// Select all chapter links
-		val chapterLinks = doc.select("a[href*='/chapter-']")
+		val chaptersJson = extractChaptersFromAstroProps(doc) ?: return emptyList()
 
-		// Use a map to deduplicate by URL
-		val chaptersMap = mutableMapOf<String, MangaChapter>()
-
-		chapterLinks.forEachIndexed { i, a ->
-			val url = a.attrAsRelativeUrl("href")
-
-			// Skip if we already have this chapter
-			if (chaptersMap.containsKey(url)) {
-				return@forEachIndexed
+		val chapters = ArrayList<MangaChapter>(chaptersJson.length())
+		for (i in 0 until chaptersJson.length()) {
+			val chapter = unboxSerializedValue(chaptersJson.opt(i)) as? JSONObject ?: continue
+			val slug = (unboxSerializedValue(chapter.opt("slug")) as? String)
+				?.takeUnless { it.isBlank() || it == "null" }
+				?: continue
+			val url = "/series/$seriesSlug/$slug"
+			val number = when (val rawNumber = unboxSerializedValue(chapter.opt("number"))) {
+				is Number -> rawNumber.toFloat()
+				is String -> rawNumber.toFloatOrNull() ?: 0f
+				else -> 0f
 			}
+			val title = (unboxSerializedValue(chapter.opt("title")) as? String)
+				?.takeUnless { it.isBlank() || it == "null" }
+			val createdAt = unboxSerializedValue(chapter.opt("createdAt")) as? String
 
-			// Extract chapter number from URL (e.g., /series/back-to-spring/chapter-61 -> 61)
-			val chapterNumber = url.substringAfterLast("/chapter-")
-				.substringBefore("/")
-				.toFloatOrNull() ?: (i + 1f)
-
-			// Try to get chapter title from the div with title attribute or the span
-			val chapterTitle = a.selectFirst("div[title]")?.attr("title")
-				?: a.selectFirst("span.font-medium")?.text()
-				?: "الفصل $chapterNumber"
-
-			chaptersMap[url] = MangaChapter(
+			chapters += MangaChapter(
 				id = generateUid(url),
-				title = chapterTitle,
-				number = chapterNumber,
+				title = when {
+					!title.isNullOrBlank() && number > 0f -> "الفصل ${formatChapterNumber(number)} - $title"
+					!title.isNullOrBlank() -> title
+					number > 0f -> "الفصل ${formatChapterNumber(number)}"
+					else -> slug
+				},
+				number = number,
 				volume = 0,
 				url = url,
 				scanlator = null,
-				uploadDate = 0,
+				uploadDate = parseChapterDate(createdAt),
 				branch = null,
 				source = source,
 			)
 		}
-
-		return chaptersMap.values.sortedBy { it.number }
+		return chapters.sortedBy { it.number }
 	}
 
-    override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val fullUrl = chapter.url.toAbsoluteUrl(domain)
-        val doc = webClient.httpGet(fullUrl).parseHtml()
+	private fun extractChaptersFromAstroProps(doc: Document): JSONArray? {
+		val propsEscaped = doc
+			.selectFirst("section[data-series-tab-panel=chapters] astro-island[props]")
+			?.attr("props")
+			?.takeUnless { it.isBlank() }
+			?: return null
 
-        val scripts = doc.select("script:containsData(__next_f.push)")
+		val props = Parser.unescapeEntities(propsEscaped, false)
+		val root = props.toJSONObjectOrNull() ?: return null
+		val post = unboxSerializedValue(root.opt("post")) as? JSONObject ?: return null
+		return unboxSerializedValue(post.opt("chapters")) as? JSONArray
+	}
 
-        for (script in scripts) {
-            val scriptContent = script.data()
+	private fun unboxSerializedValue(value: Any?): Any? {
+		if (value !is JSONArray || value.length() != 2) {
+			return value
+		}
+		return when (value.opt(0)) {
+			0, 1, "0", "1" -> unboxSerializedValue(value.opt(1))
+			else -> value
+		}
+	}
 
-            if (!scriptContent.contains("\\\"images\\\":")) {
-                continue
-            }
+	private fun formatChapterNumber(number: Float): String {
+		return if (number % 1f == 0f) {
+			number.toInt().toString()
+		} else {
+			number.toString()
+		}
+	}
 
-            val imagesMatch = Regex("""\\\"images\\\":\[([\s\S]*?)\],\\\"""").find(scriptContent)
+	private fun parseChapterDate(date: String?): Long {
+		if (date.isNullOrBlank()) return 0L
+		return synchronized(chapterDateFormat) { chapterDateFormat.parseSafe(date) }
+	}
 
-            if (imagesMatch != null) {
-                val escapedImagesJson = "[${imagesMatch.groupValues[1]}]"
+	private val chapterDateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+		timeZone = TimeZone.getTimeZone("UTC")
+	}
 
-                val imagesJson = escapedImagesJson
-                    .replace("\\\\", "\u0000")
-                    .replace("\\\"", "\"")
-                    .replace("\u0000", "\\")
+	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+		val fullUrl = chapter.url.toAbsoluteUrl(domain)
+		val doc = webClient.httpGet(fullUrl).parseHtml()
 
-                try {
-                    val imagesArray = JSONArray(imagesJson)
-                    val pages = mutableListOf<MangaPage>()
-
-                    for (i in 0 until imagesArray.length()) {
-                        val imageObj = imagesArray.getJSONObject(i)
-                        val imageUrl = imageObj.optString("url")
-
-                        if (imageUrl.isNotBlank()) {
-                            pages.add(
-                                MangaPage(
-                                    id = generateUid(imageUrl),
-                                    url = imageUrl,
-                                    preview = null,
-                                    source = source,
-                                )
-                            )
-                        }
-                    }
-
-                    if (pages.isNotEmpty()) {
-                        return pages
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    continue
-                }
-            }
-        }
-
-        throw Exception("Failed to extract chapter images from page")
-    }
+		return doc.select("section[itemprop=articleBody] figure img").mapNotNull { img ->
+			val imageUrl = img.src()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+			MangaPage(
+				id = generateUid(imageUrl),
+				url = imageUrl,
+				preview = null,
+				source = source,
+			)
+		}
+	}
 }
