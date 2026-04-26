@@ -1,6 +1,8 @@
 package org.koitharu.kotatsu.parsers.site.id
 
 import okhttp3.Headers
+import okhttp3.Interceptor
+import okhttp3.Response
 import org.json.JSONArray
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -159,6 +161,23 @@ internal class Manhwaku(context: MangaLoaderContext) :
                 source = source,
             )
         }
+    }
+
+    // Image hosts behind the chapter pages (imageainewgeneration.lol / himmga.lat /
+    // gaimgame.pics, plus rotating mirrors). They reject requests when both Origin and
+    // Referer are present, and also reject Referer without a trailing slash. Force a
+    // safe Referer and strip Origin so chapter images don't return 403 randomly.
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val host = request.url.host
+        if (!host.endsWith(domain)) {
+            val rebuilt = request.newBuilder()
+                .removeHeader("Origin")
+                .header("Referer", "https://$domain/")
+                .build()
+            return chain.proceed(rebuilt)
+        }
+        return chain.proceed(request)
     }
 
     private suspend fun fetchAllManhwa(): List<ManhwaEntry> {

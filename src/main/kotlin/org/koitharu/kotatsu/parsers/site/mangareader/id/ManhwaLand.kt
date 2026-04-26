@@ -11,6 +11,7 @@ import org.koitharu.kotatsu.parsers.model.MangaListFilter
 import org.koitharu.kotatsu.parsers.model.MangaListFilterCapabilities
 import org.koitharu.kotatsu.parsers.model.MangaPage
 import org.koitharu.kotatsu.parsers.model.MangaParserSource
+import org.koitharu.kotatsu.parsers.model.MangaTag
 import org.koitharu.kotatsu.parsers.model.SortOrder
 import org.koitharu.kotatsu.parsers.site.mangareader.MangaReaderParser
 import org.koitharu.kotatsu.parsers.util.parseHtml
@@ -46,6 +47,13 @@ internal class ManhwaLand(context: MangaLoaderContext) :
         }
         return parseMangaList(webClient.httpGet(url).parseHtml())
     }
+
+    // Default MangaReaderParser fetches `/manga` to build the tag map during getDetails().
+    // That URL is hard-blocked by Cloudflare on this domain, which makes the detail page
+    // hit CF challenges in a loop after the user already solved CF for /manga/<slug>/. Skip
+    // the tag map entirely so detail fetching only needs the single CF clearance for the
+    // manga page itself.
+    override suspend fun getOrCreateTagMap(): Map<String, MangaTag> = emptyMap()
 
     // Paksa semua gambar pakai HTTPS
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
