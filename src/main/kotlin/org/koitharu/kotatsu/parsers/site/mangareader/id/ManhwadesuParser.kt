@@ -9,7 +9,7 @@ import org.koitharu.kotatsu.parsers.site.mangareader.MangaReaderParser
 
 @MangaSourceParser("MANHWADESU", "ManhwaDesu", "id", ContentType.HENTAI)
 internal class ManhwadesuParser(context: MangaLoaderContext) :
-	MangaReaderParser(context, MangaParserSource.MANHWADESU, "manhwadesu.tech", pageSize = 20, searchPageSize = 10) {
+	MangaReaderParser(context, MangaParserSource.MANHWADESU, "manhwadesu.store", pageSize = 20, searchPageSize = 10) {
 	override val listUrl = "/komik"
 	override val filterCapabilities: MangaListFilterCapabilities
 		get() = super.filterCapabilities.copy(
