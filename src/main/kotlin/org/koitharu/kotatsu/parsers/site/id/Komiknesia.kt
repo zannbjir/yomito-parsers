@@ -14,7 +14,7 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.ConcurrentHashMap
 
-@MangaSourceParser("KOMIKNESIA", "Komiknesia", "id")
+@MangaSourceParser("KOMIKNESIA", "KomikNesia", "id")
 internal class Komiknesia(context: MangaLoaderContext) :
 	PagedMangaParser(context, MangaParserSource.KOMIKNESIA, pageSize = 20) {
 
