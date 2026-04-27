@@ -39,9 +39,36 @@ internal class Softkomik(context: MangaLoaderContext) :
     override val filterCapabilities = MangaListFilterCapabilities(
         isSearchSupported = true,
         isSearchWithFiltersSupported = false,
+        isMultipleTagsSupported = false,
     )
 
-    override suspend fun getFilterOptions() = MangaListFilterOptions()
+    override suspend fun getFilterOptions() = MangaListFilterOptions(
+        availableTags = fetchAvailableTags(),
+    )
+
+    private val tagsCache = ConcurrentHashMap<String, Set<MangaTag>>()
+
+    private suspend fun fetchAvailableTags(): Set<MangaTag> {
+        tagsCache["all"]?.let { return it }
+        return runCatching {
+            val headers = Headers.Builder()
+                .add("Referer", "https://$domain/")
+                .build()
+            val doc = webClient.httpGet("https://$domain/komik/library", headers).parseHtml()
+            val pageProps = extractPageProps(doc) ?: return@runCatching emptySet<MangaTag>()
+            val arr = pageProps.optJSONArray("genre") ?: return@runCatching emptySet<MangaTag>()
+            val tags = LinkedHashSet<MangaTag>(arr.length())
+            for (i in 0 until arr.length()) {
+                val jo = arr.optJSONObject(i) ?: continue
+                val value = jo.optString("value", "").ifEmpty { jo.optString("label", "") }
+                val label = jo.optString("label", "").ifEmpty { value }
+                if (value.isNotEmpty() && label.isNotEmpty()) {
+                    tags.add(MangaTag(title = label, key = value, source = source))
+                }
+            }
+            tags
+        }.getOrDefault(emptySet()).also { tagsCache["all"] = it }
+    }
 
     // ── Session cache ─────────────────────────────────────────────────────────
 
@@ -78,7 +105,12 @@ internal class Softkomik(context: MangaLoaderContext) :
         }
 
         val sortBy = if (order == SortOrder.POPULARITY) "popular" else "newKomik"
-        val url = "https://$domain/komik/library?sortBy=$sortBy&page=$page"
+        val genre = filter.tags.firstOrNull()?.key
+        val url = buildString {
+            append("https://").append(domain).append("/komik/library?sortBy=").append(sortBy)
+            append("&page=").append(page)
+            if (!genre.isNullOrEmpty()) append("&genre=").append(genre.urlEncoded())
+        }
 
         val headers = Headers.Builder()
             .add("Referer", "https://$domain/")
