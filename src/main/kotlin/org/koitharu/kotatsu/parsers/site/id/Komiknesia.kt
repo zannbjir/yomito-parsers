@@ -1,6 +1,8 @@
 package org.koitharu.kotatsu.parsers.site.id
 
 import okhttp3.Headers
+import okhttp3.Interceptor
+import okhttp3.Response
 import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -32,6 +34,24 @@ internal class Komiknesia(context: MangaLoaderContext) :
 		.add("Origin", "https://$domain")
 		.add("Referer", "https://$domain/")
 		.build()
+
+	// Komiknesia serves covers/images from external CDN hosts (e.g. is3.cloudhost.id,
+	// cdn.itachi.my.id). Those hosts 403 when Origin/Referer from the app don't match
+	// what they expect (app default Origin is often "null"). Strip Origin and force
+	// Referer to the site domain for image/CDN hosts (anything outside komiknesia).
+	override fun intercept(chain: Interceptor.Chain): Response {
+		val request = chain.request()
+		val host = request.url.host
+		val isSiteHost = host.endsWith(domain) || host.endsWith("komiknesia.my.id")
+		if (!isSiteHost) {
+			val rebuilt = request.newBuilder()
+				.removeHeader("Origin")
+				.header("Referer", "https://$domain/")
+				.build()
+			return chain.proceed(rebuilt)
+		}
+		return chain.proceed(request)
+	}
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(SortOrder.NEWEST)
 
