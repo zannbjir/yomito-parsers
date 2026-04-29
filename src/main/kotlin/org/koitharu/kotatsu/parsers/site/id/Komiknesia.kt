@@ -24,7 +24,7 @@ internal class Komiknesia(context: MangaLoaderContext) :
 
 	private val apiBase = "https://api-be.komiknesia.my.id/api"
 
-    override fun getRequestHeaders(): Headers = Headers.Builder()
+	override fun getRequestHeaders(): Headers = Headers.Builder()
 		.add("Referer", "https://$domain/")
 		.add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
 		.build()
@@ -35,21 +35,27 @@ internal class Komiknesia(context: MangaLoaderContext) :
 		.add("Referer", "https://$domain/")
 		.build()
 
-	// Komiknesia serves covers/images from external CDN hosts (e.g. is3.cloudhost.id,
-	// cdn.itachi.my.id). Those hosts 403 when Origin/Referer from the app don't match
-	// what they expect (app default Origin is often "null"). Strip Origin and force
-	// Referer to the site domain for image/CDN hosts (anything outside komiknesia).
 	override fun intercept(chain: Interceptor.Chain): Response {
 		val request = chain.request()
 		val host = request.url.host
+		
+		if (host.contains("ikiru.wtf")) {
+			val rebuilt = request.newBuilder()
+				.removeHeader("Origin")
+				.header("Referer", "https://ikiru.wtf/")
+				.build()
+			return chain.proceed(rebuilt)
+		}
+		
 		val isSiteHost = host.endsWith(domain) || host.endsWith("komiknesia.my.id")
 		if (!isSiteHost) {
 			val rebuilt = request.newBuilder()
 				.removeHeader("Origin")
-				.header("Referer", "https://$domain/")
+				.removeHeader("Referer")
 				.build()
 			return chain.proceed(rebuilt)
 		}
+		
 		return chain.proceed(request)
 	}
 
