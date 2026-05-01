@@ -207,6 +207,7 @@ internal class TheManga(context: MangaLoaderContext) :
 				publicUrl = "https://$domain$href",
 				title = a.selectFirstOrThrow(".popular-feature-title").text(),
 				altTitles = emptySet(),
+                description = doc.selectFirst("#synopsis-tab-panel-main .synopsis-text")?.textOrNull()?.trim(),
 				coverUrl = a.selectFirst("img")?.src(),
 				rating = a.selectFirst(".popular-feature-rating span")?.ownText()?.toFloatOrNull()?.div(2f) ?: RATING_UNKNOWN,
 				tags = emptySet(),
@@ -312,7 +313,7 @@ internal class TheManga(context: MangaLoaderContext) :
 	private fun parseChapters(doc: Document): List<MangaChapter> {
 		val chapterRows = doc.select(".chapter-row[data-href]")
 		if (chapterRows.isEmpty()) return emptyList()
-		return chapterRows.mapChapters(reversed = true) { i, row ->
+		return chapterRows.mapChapters(reversed = false) { i, row ->
 			val href = row.attrAsRelativeUrl("data-href")
 			val badge = row.selectFirst(".chapter-badge")?.text()
 			val title = row.selectFirst(".chapter-title")?.ownText()
