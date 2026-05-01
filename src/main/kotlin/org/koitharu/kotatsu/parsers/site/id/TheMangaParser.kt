@@ -48,6 +48,7 @@ internal class TheManga(context: MangaLoaderContext) :
 	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
 		super.onCreateConfig(keys)
 		keys.add(userAgentKey)
+		keys.add(ConfigKey.InterceptCloudflare(defaultValue = true))
 	}
 
 	override fun getRequestHeaders(): Headers = Headers.Builder()
@@ -90,7 +91,11 @@ internal class TheManga(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getDetails(manga: Manga): Manga {
-		val fullUrl = manga.url.toAbsoluteUrl(domain)
+		// IMPORTANT: append `?all=1` so the server returns the full chapter list
+		// instead of the first page (which truncates to e.g. only ch 100-67,
+		// hiding earlier chapters behind the "Memuat semua" button).
+		val base = manga.url.toAbsoluteUrl(domain)
+		val fullUrl = if (base.contains('?')) "$base&all=1" else "$base?all=1"
 		val doc = webClient.httpGet(fullUrl).parseHtml()
 		val heroMeta = doc.selectFirstOrThrow(".hero-meta-grid")
 		val author = heroMeta.selectFirst(".meta-item-value")?.text()
@@ -130,6 +135,10 @@ internal class TheManga(context: MangaLoaderContext) :
 			val wrapPages = doc.select("#page-wrap img")
 			if (wrapPages.isNotEmpty()) {
 				return parsePageUrls(wrapPages)
+			}
+			val mihonPages = doc.select("img.page-img")
+			if (mihonPages.isNotEmpty()) {
+				return parsePageUrls(mihonPages)
 			}
 			throw ParseException("No images found on page", fullUrl)
 		}
@@ -313,10 +322,15 @@ internal class TheManga(context: MangaLoaderContext) :
 	private fun parseChapters(doc: Document): List<MangaChapter> {
 		val chapterRows = doc.select(".chapter-row[data-href]")
 		if (chapterRows.isEmpty()) return emptyList()
-		return chapterRows.mapChapters(reversed = false) { i, row ->
+		// Site renders newest chapter first. Kotatsu expects chapter 1 first
+		// (ascending), so iterate in reversed order.
+		return chapterRows.mapChapters(reversed = true) { i, row ->
 			val href = row.attrAsRelativeUrl("data-href")
 			val badge = row.selectFirst(".chapter-badge")?.text()
 			val title = row.selectFirst(".chapter-title")?.ownText()
+			// Prefer ISO-8601 timestamp from `data-local-time` (reliable) and
+			// fall back to the human-readable relative text if absent.
+			val isoDate = row.selectFirst("[data-local-time]")?.attr("data-local-time")
 			val dateText = row.selectFirst(".chapter-meta")?.textOrNull()
 			MangaChapter(
 				id = generateUid(href),
@@ -324,11 +338,20 @@ internal class TheManga(context: MangaLoaderContext) :
 				title = title ?: "Chapter ${badge ?: (i + 1)}",
 				number = badge?.toFloatOrNull() ?: (i + 1).toFloat(),
 				volume = 0,
-				uploadDate = parseChapterDate(dateText),
+				uploadDate = parseIsoDate(isoDate) ?: parseChapterDate(dateText),
 				scanlator = null,
 				branch = null,
 				source = source,
 			)
+		}
+	}
+
+	private fun parseIsoDate(iso: String?): Long? {
+		if (iso.isNullOrBlank()) return null
+		return try {
+			SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.ROOT).parse(iso)?.time
+		} catch (_: Exception) {
+			null
 		}
 	}
 
