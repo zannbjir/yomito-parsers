@@ -4,6 +4,7 @@ import okhttp3.Interceptor
 import okhttp3.Response
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
+import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.model.ContentType
 import org.koitharu.kotatsu.parsers.model.Manga
 import org.koitharu.kotatsu.parsers.model.MangaChapter
@@ -35,9 +36,12 @@ internal class ManhwaLand(context: MangaLoaderContext) :
 
     override val datePattern = "MMM d, yyyy"
 
-    // The /manga/ archive on this domain is hard-blocked by Cloudflare while the homepage and
-    // /page/N/ pagination are not. Override the list page builder so list/search work without
-    // hitting the blocked archive.
+    override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
+        super.onCreateConfig(keys)
+        keys.add(userAgentKey)
+        keys.add(ConfigKey.InterceptCloudflare(defaultValue = true))
+    }
+
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val url = buildString {
             append("https://")
@@ -57,16 +61,8 @@ internal class ManhwaLand(context: MangaLoaderContext) :
         return parseMangaList(webClient.httpGet(url).parseHtml())
     }
 
-    // Default MangaReaderParser fetches `/manga` to build the tag map during getDetails().
-    // That URL is hard-blocked by Cloudflare on this domain. Skip it.
     override suspend fun getOrCreateTagMap(): Map<String, MangaTag> = emptyMap()
 
-    // The `/manga/<slug>/` detail page is gated behind Cloudflare on this domain. When the
-    // in-app webview interceptor just cleared CF the page loads normally; otherwise we get
-    // a 403 / archive listing back. Try the HTML path first so we get full metadata
-    // (description, status, genres, real chapter titles + dates) when possible, and fall
-    // back to the AJAX search endpoint (which is never CF-gated) to at least recover a
-    // chapter list and basic info when the HTML detail page fails.
     override suspend fun getDetails(manga: Manga): Manga {
         val htmlDetails = runCatching {
             val docs = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
@@ -91,12 +87,8 @@ internal class ManhwaLand(context: MangaLoaderContext) :
         }.getOrNull()
         if (htmlDetails != null) return htmlDetails
 
-        // Fallback path: AJAX live-search bypasses CF and exposes total chapter count,
-        // status, genres and post type. Build a synthetic chapter list from the slug.
         val slug = manga.url.trim('/').removePrefix("manga/").trim('/')
         val rawTitle = manga.title.ifBlank { slug.replace('-', ' ') }
-        // ts_ac_do_search ignores everything past ~40 chars; trim the query so long titles
-        // don't get cut at a word boundary that breaks matching.
         val query = rawTitle.take(40).urlEncoded()
         val ajaxUrl = "https://$domain/wp-admin/admin-ajax.php"
         val payload = "action=ts_ac_do_search&ts_ac_query=$query"
@@ -104,9 +96,6 @@ internal class ManhwaLand(context: MangaLoaderContext) :
             webClient.httpPost(ajaxUrl, payload).parseJson()
         }.getOrNull() ?: return manga
 
-        // Walk every entry in the response, prefer the one whose post_link slug matches
-        // exactly. If none matches, fall back to the first entry so the user still gets a
-        // chapter list even when slug heuristics miss.
         var matched: org.json.JSONObject? = null
         var firstAny: org.json.JSONObject? = null
         val series = response.optJSONArray("series")
@@ -139,9 +128,6 @@ internal class ManhwaLand(context: MangaLoaderContext) :
             else -> null
         }
 
-        // Build a synthetic description from the available metadata. The detail page is the
-        // only place that has the real synopsis and we cannot reach it; expose what we know
-        // so the user at least sees genres / type / status instead of a blank screen.
         val description = buildString {
             if (entryType.isNotBlank()) append(entryType)
             if (entryStatus.isNotBlank()) {
@@ -154,11 +140,13 @@ internal class ManhwaLand(context: MangaLoaderContext) :
             }
         }.ifBlank { null }
 
+        val isCompleted = mangaState == MangaState.FINISHED
         val chapters = (1..totalChapters).map { num ->
-            val urlPath = "/$slug-chapter-$num/"
+            val isLast = num == totalChapters && isCompleted
+            val urlPath = if (isLast) "/$slug-chapter-$num-end/" else "/$slug-chapter-$num/"
             MangaChapter(
                 id = generateUid(urlPath),
-                title = "Chapter $num",
+                title = "Chapter $num" + if (isLast) " (End)" else "",
                 url = urlPath,
                 number = num.toFloat(),
                 volume = 0,
@@ -178,15 +166,45 @@ internal class ManhwaLand(context: MangaLoaderContext) :
         )
     }
 
-    // Paksa semua gambar pakai HTTPS
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val pages = super.getPages(chapter)
-        return pages.map { page ->
-            page.copy(url = page.url.replace("http://", "https://"))
+        val candidates = buildChapterUrlCandidates(chapter.url)
+        var lastError: Throwable? = null
+        for (candidate in candidates) {
+            val resolved = if (candidate == chapter.url) chapter else chapter.copy(url = candidate)
+            val pages = runCatching { super.getPages(resolved) }
+                .onFailure { lastError = it }
+                .getOrNull()
+            if (!pages.isNullOrEmpty()) {
+                return pages.map { page ->
+                    page.copy(url = page.url.replace("http://", "https://"))
+                }
+            }
         }
+        throw lastError ?: IllegalStateException("No pages found for ${chapter.url}")
     }
 
-    // Image hotlink protection: explicitly forge headers for image requests so they load.
+    private fun buildChapterUrlCandidates(url: String): List<String> {
+        val trimmed = url.trim('/')
+        val variants = linkedSetOf<String>()
+        variants.add(url) // original first
+        // Toggle `-end` suffix.
+        if (trimmed.endsWith("-end")) {
+            variants.add("/${trimmed.removeSuffix("-end")}/")
+        } else {
+            variants.add("/$trimmed-end/")
+        }
+        // Some series append `-bahasa-indonesia`.
+        if (!trimmed.endsWith("-bahasa-indonesia") && !trimmed.endsWith("-bahasa-indonesia-end")) {
+            variants.add("/$trimmed-bahasa-indonesia/")
+            if (trimmed.endsWith("-end")) {
+                variants.add("/${trimmed.removeSuffix("-end")}-bahasa-indonesia-end/")
+            } else {
+                variants.add("/$trimmed-bahasa-indonesia-end/")
+            }
+        }
+        return variants.toList()
+    }
+
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val url = request.url.toString()
