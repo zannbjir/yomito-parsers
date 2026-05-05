@@ -142,7 +142,7 @@ internal class Komikucc(context: MangaLoaderContext) :
 						authors = emptySet(),
 						source = source,
 					)
-				}
+				}.reversed()
 			} catch (_: Exception) {
 				emptyList()
 			}
