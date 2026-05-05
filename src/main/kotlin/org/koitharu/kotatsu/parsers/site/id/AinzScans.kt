@@ -1,5 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.id
 
+import okhttp3.Interceptor
+import okhttp3.Response
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
@@ -17,6 +19,18 @@ internal class AinzScans(context: MangaLoaderContext) :
     override val configKeyDomain = ConfigKey.Domain("v1.ainzscans01.com")
 
     private val apiDomain get() = "api.ainzscans01.com"
+
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val host = request.url.host
+        if (host != apiDomain && !host.endsWith("ainzscans01.com")) {
+            val newRequest = request.newBuilder()
+                .header("Referer", "https://$domain/")
+                .build()
+            return chain.proceed(newRequest)
+        }
+        return chain.proceed(request)
+    }
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
         SortOrder.NEWEST,
@@ -102,11 +116,12 @@ internal class AinzScans(context: MangaLoaderContext) :
         val json = webClient.httpGet(url).parseJson()
         val data = json.optJSONArray("data") ?: return emptyList()
 
-        return data.mapJSON { jo ->
-            val slug = jo.getString("slug")
+        return data.mapJSONNotNull { jo ->
+            val slug = jo.optString("slug").ifBlank { return@mapJSONNotNull null }
+            val title = jo.optString("title").ifBlank { return@mapJSONNotNull null }
             Manga(
                 id = generateUid(slug),
-                title = jo.getString("title"),
+                title = title,
                 altTitles = emptySet(),
                 url = "/comic/$slug",
                 publicUrl = "https://$domain/comic/$slug",
@@ -130,10 +145,12 @@ internal class AinzScans(context: MangaLoaderContext) :
         val slug = manga.url.removePrefix("/comic/")
         val json = webClient.httpGet("https://$apiDomain/api/series/comic/$slug").parseJson()
 
-        val tags = json.optJSONArray("genres")?.mapJSON { jo ->
+        val tags = json.optJSONArray("genres")?.mapJSONNotNull { jo ->
+            val tagSlug = jo.optString("slug").ifBlank { return@mapJSONNotNull null }
+            val tagName = jo.optString("name").ifBlank { return@mapJSONNotNull null }
             MangaTag(
-                key = jo.getString("slug"),
-                title = jo.getString("name").toTitleCase(),
+                key = tagSlug,
+                title = tagName.toTitleCase(),
                 source = source,
             )
         }?.toSet() ?: emptySet()
@@ -157,8 +174,8 @@ internal class AinzScans(context: MangaLoaderContext) :
             state = state,
         )
 
-        val chapters = units.mapJSON { jo ->
-            val chapterSlug = jo.getString("slug")
+        val chapters = units.mapJSONNotNull { jo ->
+            val chapterSlug = jo.optString("slug").ifBlank { return@mapJSONNotNull null }
             val number = jo.optString("number").toFloatOrNull() ?: 0f
             val chapterTitle = jo.optString("title").takeIf { it.isNotBlank() }
                 ?: jo.optString("number").removeSuffix(".00")
@@ -197,8 +214,8 @@ internal class AinzScans(context: MangaLoaderContext) :
 
         val pages = json.optJSONObject("chapter")?.optJSONArray("pages") ?: return emptyList()
 
-        return pages.mapJSON { jo ->
-            val imageUrl = jo.getString("image_url").let { url ->
+        return pages.mapJSONNotNull { jo ->
+            val imageUrl = jo.optString("image_url").ifBlank { return@mapJSONNotNull null }.let { url ->
                 if (url.startsWith("http")) url else "https://$apiDomain$url"
             }
             MangaPage(
