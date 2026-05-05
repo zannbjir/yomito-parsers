@@ -1,6 +1,8 @@
 package org.koitharu.kotatsu.parsers.site.id
 
 import okhttp3.Headers
+import okhttp3.Interceptor
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -16,7 +18,7 @@ import java.util.Locale
 internal class Ryzukomik(context: MangaLoaderContext) :
 	PagedMangaParser(context, MangaParserSource.RYZUKOMIK, 20) {
 
-	override val configKeyDomain = ConfigKey.Domain("ryzukomik.my.id")
+	override val configKeyDomain = ConfigKey.Domain("ryzukomik.web.id")
 
 	// API backend — semua data dari sini
 	private val apiDomain = "kizoy.serv00.net"
@@ -26,6 +28,18 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 		.add("Referer", "https://$domain/")
 		.add("Accept", "application/json, text/plain, */*")
 		.build()
+
+	override fun intercept(chain: Interceptor.Chain): Response {
+		val request = chain.request()
+		val host = request.url.host
+		if (host != apiDomain && host != domain) {
+			val newRequest = request.newBuilder()
+				.header("Referer", "https://$domain/")
+				.build()
+			return chain.proceed(newRequest)
+		}
+		return chain.proceed(request)
+	}
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.UPDATED,
