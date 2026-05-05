@@ -1,6 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.id
 
 import okhttp3.Headers
+import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -16,12 +17,15 @@ internal class Komikapk(context: MangaLoaderContext) :
 
     override val configKeyDomain = ConfigKey.Domain("komikapk.app")
 
+    private val cdnUrl = "https://s1.cdn-guard.com/komikapk2-chapter/"
+    private val storageUrl = "https://storage.com/"
+
     override fun getRequestHeaders(): Headers = Headers.Builder()
-    .add("Referer", "https://$domain/")
-    .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-    .add("Accept-Language", "id-ID,id;q=0.9,en;q=0.8")
-    .build()
+        .add("Referer", "https://$domain/")
+        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+        .add("Accept-Language", "id-ID,id;q=0.9,en;q=0.8")
+        .build()
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
         SortOrder.UPDATED,
@@ -45,7 +49,6 @@ internal class Komikapk(context: MangaLoaderContext) :
         ),
     )
 
-    // Semua genre dari situs kamu (sudah dibersihkan)
     private fun fetchTags(): Set<MangaTag> {
         return setOf(
             "3d", "abusing", "actio", "action", "action-adventure", "adult", "adventure", "affair",
@@ -126,24 +129,24 @@ internal class Komikapk(context: MangaLoaderContext) :
     }
 
     private fun buildListUrl(page: Int, filter: MangaListFilter, order: SortOrder): String {
-    if (!filter.query.isNullOrEmpty()) {
-        return "https://$domain/pencarian?q=${filter.query.urlEncoded()}&page=$page&is-adult=on"
-    }
+        if (!filter.query.isNullOrEmpty()) {
+            return "https://$domain/pencarian?q=${filter.query.urlEncoded()}&page=$page&is-adult=on"
+        }
 
-    val type = when (filter.types.firstOrNull()) {
-        ContentType.MANGA -> "manga"
-        ContentType.MANHWA -> "manhwa"
-        ContentType.MANHUA -> "manhua"
-        else -> "semua"
-    }
-    val tag = filter.tags.firstOrNull()?.key ?: "semua"
-    val sort = when (order) {
-        SortOrder.POPULARITY -> "populer"
-        else -> "terbaru"
-    }
+        val type = when (filter.types.firstOrNull()) {
+            ContentType.MANGA -> "manga"
+            ContentType.MANHWA -> "manhwa"
+            ContentType.MANHUA -> "manhua"
+            else -> "semua"
+        }
+        val tag = filter.tags.firstOrNull()?.key ?: "semua"
+        val sort = when (order) {
+            SortOrder.POPULARITY -> "populer"
+            else -> "terbaru"
+        }
 
-    return "https://$domain/pustaka/$type/$tag/$sort/$page?include_adult=true"
-}
+        return "https://$domain/pustaka/$type/$tag/$sort/$page?include_adult=true"
+    }
 
     private fun parseMangaList(doc: Document): List<Manga> {
         return doc.select("a[href^='/komik/']").mapNotNull { element ->
@@ -163,7 +166,7 @@ internal class Komikapk(context: MangaLoaderContext) :
                 url = href,
                 publicUrl = "https://$domain$href",
                 rating = RATING_UNKNOWN,
-                contentRating = null,           // nanti di getDetails
+                contentRating = null,
                 coverUrl = coverUrl,
                 largeCoverUrl = coverUrl,
                 tags = emptySet(),
@@ -184,19 +187,18 @@ internal class Komikapk(context: MangaLoaderContext) :
             MangaTag(title = a.text().trim(), key = tagSlug, source = source)
         }.toSet()
         val state = if (doc.html().contains("completed", ignoreCase = true) ||
-                       doc.html().contains("tamat", ignoreCase = true))
+            doc.html().contains("tamat", ignoreCase = true))
             MangaState.FINISHED else MangaState.ONGOING
         val adultKeywords = listOf("adult", "mature", "smut", "ecchi", "hentai", "18+", "nakadashi", "rape", "incest", "milf", "loli", "shota", "futanari", "gangbang", "creampie", "ntr")
         val contentRating = if (tags.any { tag -> adultKeywords.any { it in tag.title.lowercase() } })
             ContentRating.ADULT else ContentRating.SAFE
 
-        // Chapter parsing dengan uploader
         val chapters = doc.select("a[href^='/komik/']").mapNotNull { a ->
             val href = a.attr("href").trim()
             val segments = href.split("/").filter { it.isNotBlank() }
             if (segments.size < 4) return@mapNotNull null
 
-            val uploaderSlug = segments[2]   // uploader ada di index ke-2
+            val uploaderSlug = segments[2]
             val titleText = a.text().trim()
             if (titleText.isBlank()) return@mapNotNull null
 
@@ -216,7 +218,7 @@ internal class Komikapk(context: MangaLoaderContext) :
                 source = source,
             )
         }.distinctBy { it.url }
-         .sortedBy { it.number }   // terbaru di atas
+            .sortedBy { it.number }
 
         return manga.copy(
             title = title,
@@ -234,50 +236,86 @@ internal class Komikapk(context: MangaLoaderContext) :
         val regex = Regex("""(?:chapter|ch\.?|bab)\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
         return regex.find(name)?.groupValues?.get(1)?.toFloatOrNull()
     }
-       
+
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-    val chapterUrl = chapter.url.toAbsoluteUrl(domain)
-    val headers = getRequestHeaders().newBuilder()
-        .add("Referer", chapterUrl)
-        .build()
+        val chapterUrl = chapter.url.toAbsoluteUrl(domain)
 
-    val doc = webClient.httpGet(chapterUrl, headers).parseHtml()
-
-    // 1. Coba ambil gambar asli (src bukan loading.gif)
-    val imgElements = doc.select("section img, img[alt*='image-komik']")
-    val realPages = imgElements.mapNotNull { img ->
-        val src = img.src() ?: img.attr("data-src") ?: return@mapNotNull null
-        if (src.contains("loading.gif") || src.isBlank()) return@mapNotNull null
-        MangaPage(id = generateUid(src), url = src, preview = null, source = source)
-    }
-    if (realPages.isNotEmpty()) return realPages
-
-    // 2. Fallback: gunakan jumlah elemen img (meskipun placeholder)
-    val totalFromCount = imgElements.size
-    if (totalFromCount > 0) {
-        val segments = chapter.url.split("/").filter { it.isNotBlank() }
-        // Format: /komik/{comicSlug}/{uploaderSlug}/{chapterName}
-        val comicSlug = segments.getOrNull(1) ?: return emptyList()
-        val chapterName = segments.getOrNull(3) ?: return emptyList()
-        return (0 until totalFromCount).map { i ->
-            val url = "https://s1.cdn-guard.com/komikapk2-chapter/$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
-            MangaPage(id = generateUid(url), url = url, preview = null, source = source)
+        // Primary: use SvelteKit __data.json API for reliable structured data
+        try {
+            val dataUrl = "${chapterUrl}/__data.json"
+            val json = webClient.httpGet(dataUrl).parseJson()
+            val pages = parsePagesFromJson(json)
+            if (pages.isNotEmpty()) return pages
+        } catch (_: Exception) {
+            // Fall through to HTML parsing
         }
+
+        // Fallback: parse HTML
+        val doc = webClient.httpGet(chapterUrl).parseHtml()
+        return parsePagesFromHtml(doc, chapter)
     }
 
-    // 3. Terakhir, coba ekstrak total halaman dari alt text (contoh: "...-32/33")
-    val altLast = imgElements.lastOrNull()?.attr("alt")
-    val totalFromAlt = altLast?.substringAfterLast("/")?.toIntOrNull()
-    if (totalFromAlt != null && totalFromAlt > 0) {
-        val segments = chapter.url.split("/").filter { it.isNotBlank() }
-        val comicSlug = segments.getOrNull(1) ?: return emptyList()
-        val chapterName = segments.getOrNull(3) ?: return emptyList()
-        return (0 until totalFromAlt).map { i ->
-            val url = "https://s1.cdn-guard.com/komikapk2-chapter/$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
-            MangaPage(id = generateUid(url), url = url, preview = null, source = source)
+    private fun parsePagesFromJson(json: JSONObject): List<MangaPage> {
+        val nodes = json.getJSONArray("nodes")
+        for (i in 0 until nodes.length()) {
+            val node = nodes.optJSONObject(i) ?: continue
+            if (node.optString("type") != "data") continue
+            val data = node.getJSONArray("data")
+            val root = data.optJSONObject(0) ?: continue
+            val chapterIdx = root.optInt("chapter", -1)
+            if (chapterIdx < 0) continue
+            val chapterObj = data.optJSONObject(chapterIdx) ?: continue
+            val imagesIdx = chapterObj.optInt("images", -1)
+            if (imagesIdx < 0) continue
+            val imagesArray = data.optJSONArray(imagesIdx) ?: continue
+
+            val pages = ArrayList<MangaPage>(imagesArray.length())
+            for (j in 0 until imagesArray.length()) {
+                val imgRef = imagesArray.optInt(j, -1)
+                if (imgRef < 0) continue
+                val rawUrl = data.optString(imgRef, null) ?: continue
+                val url = rawUrl.replace(storageUrl, cdnUrl)
+                pages.add(MangaPage(id = generateUid(url), url = url, preview = null, source = source))
+            }
+            if (pages.isNotEmpty()) return pages
         }
+        return emptyList()
     }
 
-    return emptyList()
+    private fun parsePagesFromHtml(doc: Document, chapter: MangaChapter): List<MangaPage> {
+        val imgElements = doc.select("section img, img[alt*='image-komik']")
+        val realPages = imgElements.mapNotNull { img ->
+            val src = img.src() ?: img.attr("data-src").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            if (src.contains("loading.gif") || src.isBlank()) return@mapNotNull null
+            MangaPage(id = generateUid(src), url = src, preview = null, source = source)
+        }
+        if (realPages.isNotEmpty()) return realPages
+
+        // Fallback: construct CDN URLs from image count
+        val totalFromCount = imgElements.size
+        if (totalFromCount > 0) {
+            val segments = chapter.url.split("/").filter { it.isNotBlank() }
+            val comicSlug = segments.getOrNull(1) ?: return emptyList()
+            val chapterName = segments.getOrNull(3) ?: return emptyList()
+            return (0 until totalFromCount).map { i ->
+                val url = "${cdnUrl}$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
+                MangaPage(id = generateUid(url), url = url, preview = null, source = source)
+            }
+        }
+
+        // Last resort: extract total from alt text (e.g. "...-32/33")
+        val altLast = imgElements.lastOrNull()?.attr("alt")
+        val totalFromAlt = altLast?.substringAfterLast("/")?.toIntOrNull()
+        if (totalFromAlt != null && totalFromAlt > 0) {
+            val segments = chapter.url.split("/").filter { it.isNotBlank() }
+            val comicSlug = segments.getOrNull(1) ?: return emptyList()
+            val chapterName = segments.getOrNull(3) ?: return emptyList()
+            return (0 until totalFromAlt).map { i ->
+                val url = "${cdnUrl}$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
+                MangaPage(id = generateUid(url), url = url, preview = null, source = source)
+            }
+        }
+
+        return emptyList()
+    }
 }
-    }
