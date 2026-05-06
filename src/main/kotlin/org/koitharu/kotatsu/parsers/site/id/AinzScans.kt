@@ -212,7 +212,9 @@ internal class AinzScans(context: MangaLoaderContext) :
             "https://$apiDomain/api/series/comic/$seriesSlug/chapter/$chapterSlug"
         ).parseJson()
 
-        val pages = json.optJSONObject("chapter")?.optJSONArray("pages") ?: return emptyList()
+        val pages = json.optJSONObject("chapter")?.optJSONArray("pages")
+            ?: json.optJSONArray("pages")
+            ?: return getPagesFromWeb(chapter)
 
         return pages.mapJSONNotNull { jo ->
             val imageUrl = jo.optString("image_url").ifBlank { return@mapJSONNotNull null }.let { url ->
@@ -224,6 +226,25 @@ internal class AinzScans(context: MangaLoaderContext) :
                 preview = null,
                 source = source,
             )
+        }
+    }
+
+    private suspend fun getPagesFromWeb(chapter: MangaChapter): List<MangaPage> {
+        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
+        val images = doc.select(".entry-content img, .reading-content img, #readerarea img")
+        return images.mapNotNull { img ->
+            val imageUrl = img.attr("abs:src").ifBlank { img.attr("data-src") }
+                .ifBlank { img.attr("data-lazy-src") }
+                .ifBlank { img.attr("src") }
+                .takeIf { it.isNotBlank() }
+            imageUrl?.let {
+                MangaPage(
+                    id = generateUid(it),
+                    url = it,
+                    preview = null,
+                    source = source,
+                )
+            }
         }
     }
 

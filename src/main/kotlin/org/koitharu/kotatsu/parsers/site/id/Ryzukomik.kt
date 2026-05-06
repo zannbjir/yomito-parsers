@@ -24,9 +24,15 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 	private val apiDomain = "kizoy.serv00.net"
 	private val apiBase = "https://$apiDomain/yu.php"
 
+	private companion object {
+		private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+	}
+
 	private fun buildHeaders(): Headers = Headers.Builder()
 		.add("Referer", "https://$domain/")
 		.add("Accept", "application/json, text/plain, */*")
+		.add("Origin", "https://$domain")
+		.add("User-Agent", USER_AGENT)
 		.build()
 
 	override fun intercept(chain: Interceptor.Chain): Response {
@@ -35,6 +41,8 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 		if (host != apiDomain && host != domain) {
 			val newRequest = request.newBuilder()
 				.header("Referer", "https://$domain/")
+				.header("Origin", "https://$domain")
+				.header("User-Agent", USER_AGENT)
 				.build()
 			return chain.proceed(newRequest)
 		}
@@ -242,9 +250,11 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 
 		val json = webClient.httpGet(apiUrl, buildHeaders()).parseJson()
 
-		if (!json.optBoolean("status", false)) return emptyList()
-		val data = json.optJSONObject("data") ?: return emptyList()
-		val gambarArr = data.optJSONArray("gambar") ?: return emptyList()
+		if (!json.optBoolean("status", false)) {
+			return getPagesFromHtml(slug)
+		}
+		val data = json.optJSONObject("data") ?: return getPagesFromHtml(slug)
+		val gambarArr = data.optJSONArray("gambar") ?: return getPagesFromHtml(slug)
 
 		return (0 until gambarArr.length()).mapNotNull { i ->
 			val obj = gambarArr.getJSONObject(i)
@@ -258,6 +268,25 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 		}
 	}
 
+
+	private suspend fun getPagesFromHtml(slug: String): List<MangaPage> {
+		val doc = webClient.httpGet("https://$domain/$slug/", buildHeaders()).parseHtml()
+		val images = doc.select(".entry-content img, #readerarea img, .reading-content img")
+		return images.mapIndexedNotNull { index, img ->
+			val imageUrl = img.attr("abs:src").ifBlank { img.attr("data-src") }
+				.ifBlank { img.attr("data-lazy-src") }
+				.ifBlank { img.attr("src") }
+				.takeIf { it.isNotBlank() }
+			imageUrl?.let {
+				MangaPage(
+					id = generateUid("$slug-$index"),
+					url = it,
+					preview = null,
+					source = source,
+				)
+			}
+		}
+	}
 
 	private fun parseRelativeDate(text: String): Long {
 		if (text.isBlank()) return 0L
