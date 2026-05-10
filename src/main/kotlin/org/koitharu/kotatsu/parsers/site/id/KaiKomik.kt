@@ -78,7 +78,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
     }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
-        val url = "https://&domain/comics".toHttpUrlOrNull()!!.newBuilder()
+        val url = "https://$domain/comics".toHttpUrlOrNull()!!.newBuilder()
 
         if (!filter.query.isNullOrEmpty()) {
             url.addQueryParameter("q", filter.query)
