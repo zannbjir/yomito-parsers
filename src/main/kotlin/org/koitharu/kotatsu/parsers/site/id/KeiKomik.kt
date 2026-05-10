@@ -78,33 +78,20 @@ internal class Keikomik(context: MangaLoaderContext) :
     }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
-        return buildString {
-            append("https://")
-            append(domain)
-
-            if (!filter.query.isNullOrEmpty()) {
-                append("/page/")
-                append(page)
-                append("/?s=")
-                append(filter.query.urlEncoded())
-            } else {
-                append("/manga/")
-                if (page > 1) {
-                    append("page/")
-                    append(page)
-                    append("/")
-                }
-                append("?order=")
-                append(
-                    when (order) {
-                        SortOrder.POPULARITY -> "popular"
-                        SortOrder.NEWEST -> "latest"
-                        SortOrder.ALPHABETICAL -> "title"
-                        else -> "update"
-                    }
-                )
-            }
+        val base = "https://$domain"
+        
+        if (!filter.query.isNullOrEmpty()) {
+            return "$base/search?q=${filter.query.urlEncoded()}&page=$page"
         }
+        
+        val sort = when (order) {
+            SortOrder.POPULARITY -> "popular"
+            SortOrder.NEWEST -> "latest"
+            SortOrder.ALPHABETICAL -> "title"
+            else -> "update"
+        }
+        
+        return "$base/list?page=$page&order=$sort"
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
