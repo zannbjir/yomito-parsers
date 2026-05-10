@@ -31,7 +31,15 @@ internal class Kaikomik(context: MangaLoaderContext) :
     )
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
-        availableTags = emptySet(),
+        availableTags = setOf(
+            "Action", "Adult", "Adventure", "Comedy", "Drama", "Ecchi", 
+            "Fantasy", "Gender Bender", "Gore", "Harem", "Historical", 
+            "Horor", "Isekai", "Josei", "Magic", "Martial Arts", "Mature", 
+            "Mystery", "One-shot", "Psychological", "Reincarnation", 
+            "Romance", "School Life", "Sci-fi", "Seinen", "Shoujo", 
+            "Shounen", "Slice of Life", "Supernatural", "Survival", 
+            "Thriller", "Time Travel", "Tragedy", "Villainess", "Yuri"
+        ).map { MangaTag(it, it, source) }.toSet(),
         availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
         availableContentTypes = EnumSet.of(ContentType.MANGA, ContentType.MANHWA),
     )
