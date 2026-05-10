@@ -86,31 +86,29 @@ internal class Kaikomik(context: MangaLoaderContext) :
     }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
-        val url = "https://$domain/comics".toHttpUrlOrNull()!!.newBuilder()
+        val base = "https://$domain/comics"
 
         if (!filter.query.isNullOrEmpty()) {
-            url.addQueryParameter("q", filter.query)
+            return "$base?q=${filter.query.urlEncoded()}&page=$page"
+        }
+
+        val sortParam = when (order) {
+            SortOrder.UPDATED -> "updatedAt"
+            SortOrder.NEWEST -> "createdAt"
+            SortOrder.ALPHABETICAL -> "title"
+            SortOrder.POPULARITY -> "views"
+            else -> "updatedAt"
+        }
+        
+        val genreParams = if (filter.tags.isNotEmpty()) {
+            filter.tags.joinToString("") { "&genres=${it.key}" }
         } else {
-            filter.tags.forEach { tag ->
-                url.addQueryParameter("genres", tag.key)
-            }
-            val sortParam = when (order) {
-                SortOrder.UPDATED -> "updatedAt"
-                SortOrder.NEWEST -> "createdAt"
-                SortOrder.ALPHABETICAL -> "title"
-                SortOrder.POPULARITY -> "views"
-                else -> "updatedAt"
-            }
-            url.addQueryParameter("sort", sortParam)
+            ""
         }
 
-        if (page > 1) {
-            url.addQueryParameter("page", page.toString())
-        }
-
-        return url.build().toString()
+        return "$base?sort=$sortParam$genreParams&page=$page"
     }
-
+    
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl, getRequestHeaders()).parseHtml()
 
