@@ -40,11 +40,10 @@ internal class Keikomik(context: MangaLoaderContext) :
         val url = buildListUrl(page, order, filter)
         val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
 
-        val rawList = doc.select("div.manga-card, .manga-item, article, .series-item").mapNotNull { el: org.jsoup.nodes.Element  ->
+        val rawList = doc.select("div.manga-card, .manga-item, article, .series-item").mapNotNull { el ->
             val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']")
             val title = el.selectFirst("h2, h3, .title, .manga-title")?.text()?.trim()
 
-            // Pakai logika IF-ELSE biasa, JitPack dijamin nggak mabok
             if (a != null && title != null) {
                 val href = a.attrAsRelativeUrl("href")
                 val cover = el.selectFirst("img")?.attr("data-src")?.ifBlank { null } ?: el.selectFirst("img")?.src()
@@ -61,13 +60,14 @@ internal class Keikomik(context: MangaLoaderContext) :
                     state = null,
                     authors = emptySet(),
                     source = source,
+                    altTitles = emptySet(),
                 )
             } else {
                 null
             }
         }
 
-        return rawList.distinctBy { manga: Manga -> manga.id }
+        return rawList.distinctBy { it.id }
     }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
@@ -89,7 +89,7 @@ internal class Keikomik(context: MangaLoaderContext) :
         val title = doc.selectFirst("h1, .title, .manga-title")?.text()?.trim() ?: manga.title
         val description = doc.selectFirst(".synopsis, .description, .summary")?.text()?.trim().orEmpty()
 
-        val chapters = doc.select("a.chapter-link, li.chapter a, .episode-list a").map { a: org.jsoup.nodes.Element ->
+        val chapters = doc.select("a.chapter-link, li.chapter a, .episode-list a").map { a ->
             val url = a.attrAsRelativeUrl("href")
             val chTitle = a.text().trim()
             MangaChapter(
