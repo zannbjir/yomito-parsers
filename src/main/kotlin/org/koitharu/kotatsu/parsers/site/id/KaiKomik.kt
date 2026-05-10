@@ -41,7 +41,8 @@ internal class Kaikomik(context: MangaLoaderContext) :
         val url = buildListUrl(page, order, filter)
         val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
 
-        val rawList = doc.select("div.manga-item, .komik-card, article, .list-manga").mapNotNull { el: Element ->
+        // 100% TEGAS ke compiler Kotlin: Input Element, Output Manga
+        val rawList: List<Manga> = doc.select("div.manga-item, .komik-card, article, .list-manga").mapNotNull<Element, Manga> { el ->
             val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']") ?: return@mapNotNull null
             val href = a.attrAsRelativeUrl("href")
             val title = el.selectFirst("h2, h3, .title")?.text()?.trim() ?: return@mapNotNull null
@@ -63,7 +64,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
             )
         }
 
-        return rawList.distinctBy { manga: Manga -> manga.id }
+        return rawList.distinctBy { it.id }
     }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
@@ -85,7 +86,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
         val title = doc.selectFirst("h1, .title, .manga-title")?.text()?.trim() ?: manga.title
         val description = doc.selectFirst(".synopsis, .description, .summary")?.text()?.trim().orEmpty()
 
-        val chapters = doc.select("a.chapter-link, li.chapter a, .episode a").mapNotNull { a: Element ->
+        val chapters: List<MangaChapter> = doc.select("a.chapter-link, li.chapter a, .episode a").mapNotNull<Element, MangaChapter> { a ->
             val url = a.attrAsRelativeUrl("href")
             val chTitle = a.text().trim()
             MangaChapter(
@@ -116,7 +117,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
         val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
 
         return doc.select("img.reader-img, .chapter-image img, img[data-src], img[src*='storage']")
-            .mapNotNull { img: Element ->
+            .mapNotNull<Element, MangaPage> { img ->
                 val url = img.attr("data-src").ifBlank { img.attr("src") }.trim()
                 if (url.isNotBlank() && !url.contains("placeholder")) {
                     MangaPage(
