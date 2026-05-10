@@ -40,7 +40,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
         val url = buildListUrl(page, order, filter)
         val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
 
-        val rawList = doc.select("div.manga-item, .komik-card, article, .list-manga").mapNotNull { el ->
+        val rawList = doc.select("div.manga-item, .komik-card, article, .list-manga").mapNotNull { el: org.jsoup.nodes.Element ->
             val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']")
             val title = el.selectFirst("h2, h3, .title")?.text()?.trim()
 
@@ -67,7 +67,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
             }
         }
 
-        return rawList.distinctBy { it.id }
+        return rawList.distinctBy { manga: Manga -> manga.id }
     }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
@@ -89,7 +89,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
         val title = doc.selectFirst("h1, .title, .manga-title")?.text()?.trim() ?: manga.title
         val description = doc.selectFirst(".synopsis, .description, .summary")?.text()?.trim().orEmpty()
 
-        val chapters = doc.select("a.chapter-link, li.chapter a, .episode a").map { a ->
+        val chapters = doc.select("a.chapter-link, li.chapter a, .episode a").map { a: org.jsoup.nodes.Element ->
             val url = a.attrAsRelativeUrl("href")
             val chTitle = a.text().trim()
             MangaChapter(
@@ -103,7 +103,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
                 branch = null,
                 source = source,
             )
-        }.sortedByDescending { it.number }
+        }.sortedBy { it.number }
 
         return manga.copy(
             title = title,
