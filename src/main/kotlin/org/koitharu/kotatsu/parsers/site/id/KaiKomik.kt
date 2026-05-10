@@ -16,13 +16,13 @@ internal class Kaikomik(context: MangaLoaderContext) :
     override val configKeyDomain = ConfigKey.Domain("kaikomik.my.id")
 
     override fun getRequestHeaders(): Headers = Headers.Builder()
-        .add("User-Agent", "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36")
-        .add("Referer", "https://kaikomik.my.id/")
+        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
+        .add("Referer", "https://$domain/")
         .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
         .build()
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
-        SortOrder.UPDATED, SortOrder.NEWEST, SortOrder.POPULARITY
+        SortOrder.UPDATED, SortOrder.NEWEST, SortOrder.POPULARITY, SortOrder.ALPHABETICAL
     )
 
     override val filterCapabilities = MangaListFilterCapabilities(
@@ -40,98 +40,168 @@ internal class Kaikomik(context: MangaLoaderContext) :
         val url = buildListUrl(page, order, filter)
         val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
 
-        val rawList = doc.select("div.manga-item, .komik-card, article, .list-manga").mapNotNull { el ->
-            val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']")
-            val title = el.selectFirst("h2, h3, .title")?.text()?.trim()
+        val items = doc.select(
+            ".listupd .bs, .listupd .bsx, .bs .bsx, div.bs, " +
+            ".utao .uta, .animepost, article.bs, .bixbox .listupd .bs"
+        )
 
-            if (a != null && title != null) {
-                val href = a.attrAsRelativeUrl("href")
-                val cover = el.selectFirst("img")?.attr("data-src")?.ifBlank { null } ?: el.selectFirst("img")?.src()
-                Manga(
-                    id = generateUid(href),
-                    title = title,
-                    url = href,
-                    publicUrl = a.attrAsAbsoluteUrl("href"),
-                    coverUrl = cover,
-                    largeCoverUrl = cover,
-                    rating = RATING_UNKNOWN,
-                    contentRating = ContentRating.ADULT,
-                    tags = emptySet(),
-                    state = null,
-                    authors = emptySet(),
-                    source = source,
-                    altTitles = emptySet(),
-                )
-            } else {
-                null
-            }
+        return items.mapNotNull { el ->
+            val a = el.selectFirst("a") ?: return@mapNotNull null
+            val href = a.attrAsRelativeUrlOrNull("href") ?: return@mapNotNull null
+            val title = el.selectFirst(".tt, h3, h4, .title")?.text()?.trim()
+                ?: a.attr("title").trim().ifBlank { return@mapNotNull null }
+
+            val cover = el.selectFirst("img")?.let { img ->
+                img.attr("data-src").ifBlank {
+                    img.attr("data-lazy-src").ifBlank {
+                        img.attr("src")
+                    }
+                }
+            }?.ifBlank { null }
+
+            Manga(
+                id = generateUid(href),
+                title = title,
+                altTitles = emptySet(),
+                url = href,
+                publicUrl = a.attrAsAbsoluteUrl("href"),
+                coverUrl = cover,
+                largeCoverUrl = null,
+                rating = RATING_UNKNOWN,
+                contentRating = null,
+                tags = emptySet(),
+                state = null,
+                authors = emptySet(),
+                source = source,
+            )
         }
-
-        return rawList.distinctBy { it.id }
     }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
-        val base = "https://kaikomik.my.id"
-        if (!filter.query.isNullOrEmpty()) {
-            return "$base/search?q=${filter.query.urlEncoded()}&page=$page"
+        return buildString {
+            append("https://")
+            append(domain)
+
+            if (!filter.query.isNullOrEmpty()) {
+                append("/page/")
+                append(page)
+                append("/?s=")
+                append(filter.query.urlEncoded())
+            } else {
+                append("/manga/")
+                if (page > 1) {
+                    append("page/")
+                    append(page)
+                    append("/")
+                }
+                append("?order=")
+                append(
+                    when (order) {
+                        SortOrder.POPULARITY -> "popular"
+                        SortOrder.NEWEST -> "latest"
+                        SortOrder.ALPHABETICAL -> "title"
+                        else -> "update"
+                    }
+                )
+            }
         }
-        val sort = when (order) {
-            SortOrder.POPULARITY -> "popular"
-            SortOrder.NEWEST -> "latest"
-            else -> "update"
-        }
-        return "$base/list?page=$page&order=$sort"
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl, getRequestHeaders()).parseHtml()
 
-        val title = doc.selectFirst("h1, .title, .manga-title")?.text()?.trim() ?: manga.title
-        val description = doc.selectFirst(".synopsis, .description, .summary")?.text()?.trim().orEmpty()
+        val title = doc.selectFirst(
+            "h1.entry-title, h1.manga-title, h1.series-title, h1"
+        )?.text()?.trim() ?: manga.title
 
-        val chapters = doc.select("a.chapter-link, li.chapter a, .episode a").map { a ->
-            val url = a.attrAsRelativeUrl("href")
-            val chTitle = a.text().trim()
-            MangaChapter(
-                id = generateUid(url),
-                title = chTitle,
-                url = url,
-                number = chTitle.parseChapterNumber() ?: 0f,
-                volume = 0,
-                scanlator = null,
-                uploadDate = 0L,
-                branch = null,
-                source = source,
-            )
-        }.sortedBy { it.number }
+        val description = doc.selectFirst(
+            ".entry-content p, .synops p, .desc p, .summary p, " +
+            "[itemprop=description], .entry-content, .synops, .desc"
+        )?.text()?.trim()
+
+        val tags = doc.select(".mgen a, .genres a, .genre a").mapNotNullToSet { a ->
+            val key = a.attr("href").removeSuffix("/").substringAfterLast("/")
+            val tagTitle = a.text().trim()
+            if (key.isNotBlank() && tagTitle.isNotBlank()) {
+                MangaTag(title = tagTitle, key = key, source = source)
+            } else null
+        }
+
+        val stateText = doc.selectFirst(
+            ".tsinfo .imptdt i, " +
+            ".infotable td:contains(Status) + td, " +
+            ".spe span:contains(Status) i"
+        )?.text()?.trim()
+
+        val state = when {
+            stateText == null -> null
+            stateText.contains("ongoing", ignoreCase = true) ||
+            stateText.contains("berjalan", ignoreCase = true) -> MangaState.ONGOING
+            stateText.contains("completed", ignoreCase = true) ||
+            stateText.contains("tamat", ignoreCase = true) -> MangaState.FINISHED
+            stateText.contains("hiatus", ignoreCase = true) -> MangaState.PAUSED
+            else -> null
+        }
+
+        val author = doc.selectFirst(
+            ".infotable td:contains(Author) + td, " +
+            ".tsinfo .imptdt:contains(Author) a, " +
+            ".spe span:contains(Author) a"
+        )?.text()?.trim()
+
+        val chapters = doc.select("#chapterlist > ul > li, .chapterlist li")
+            .mapChapters(reversed = true) { index, el ->
+                val a = el.selectFirst("a") ?: return@mapChapters null
+                val chUrl = a.attrAsRelativeUrlOrNull("href") ?: return@mapChapters null
+                val chTitle = el.selectFirst(".chapternum")?.text()?.trim()
+                MangaChapter(
+                    id = generateUid(chUrl),
+                    title = chTitle,
+                    url = chUrl,
+                    number = index + 1f,
+                    volume = 0,
+                    scanlator = null,
+                    uploadDate = 0L,
+                    branch = null,
+                    source = source,
+                )
+            }
+
+        val cover = doc.selectFirst(
+            ".thumb img, .series-thumb img, [itemprop=image] img"
+        )?.let { img ->
+            img.attr("data-src").ifBlank { img.attr("src") }
+        }?.ifBlank { null }
 
         return manga.copy(
             title = title,
             description = description,
+            tags = tags,
+            state = state,
+            authors = setOfNotNull(author),
+            coverUrl = cover ?: manga.coverUrl,
             chapters = chapters,
-            state = if (doc.text().contains("tamat", ignoreCase = true)) MangaState.FINISHED else MangaState.ONGOING
         )
     }
-
-    private fun String.parseChapterNumber(): Float? =
-        Regex("""[0-9]+(\.[0-9]+)?""").find(this)?.value?.toFloatOrNull()
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
 
-        return doc.select("img.reader-img, .chapter-image img, img[data-src], img[src*='storage']")
+        return doc.select("#readerarea img, .reading-content img, .entry-content img")
             .mapNotNull { img ->
-                val url = img.attr("data-src").ifBlank { img.attr("src") }.trim()
-                if (url.isNotBlank() && !url.contains("placeholder")) {
+                val url = img.attr("data-src").ifBlank {
+                    img.attr("data-lazy-src").ifBlank {
+                        img.attr("src")
+                    }
+                }.trim()
+                if (url.isNotBlank() && !url.contains("placeholder") && url.startsWith("http")) {
                     MangaPage(
                         id = generateUid(url),
-                        url = url.toAbsoluteUrl(domain),
+                        url = url,
                         preview = null,
                         source = source
                     )
-                } else {
-                    null
-                }
+                } else null
             }
     }
 }
