@@ -1,7 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.id
 
 import okhttp3.Headers
-import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
@@ -41,27 +40,31 @@ internal class Kaikomik(context: MangaLoaderContext) :
         val url = buildListUrl(page, order, filter)
         val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
 
-        // 100% TEGAS ke compiler Kotlin: Input Element, Output Manga
-        val rawList: List<Manga> = doc.select("div.manga-item, .komik-card, article, .list-manga").mapNotNull<Element, Manga> { el ->
-            val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']") ?: return@mapNotNull null
-            val href = a.attrAsRelativeUrl("href")
-            val title = el.selectFirst("h2, h3, .title")?.text()?.trim() ?: return@mapNotNull null
-            val cover = el.selectFirst("img")?.attr("data-src")?.ifBlank { null } ?: el.selectFirst("img")?.src()
+        val rawList = doc.select("div.manga-item, .komik-card, article, .list-manga").mapNotNull { el ->
+            val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']")
+            val title = el.selectFirst("h2, h3, .title")?.text()?.trim()
 
-            Manga(
-                id = generateUid(href),
-                title = title,
-                url = href,
-                publicUrl = a.attrAsAbsoluteUrl("href"),
-                coverUrl = cover,
-                largeCoverUrl = cover,
-                rating = RATING_UNKNOWN,
-                contentRating = ContentRating.ADULT,
-                tags = emptySet(),
-                state = null,
-                authors = emptySet(),
-                source = source,
-            )
+            // Pakai logika IF-ELSE biasa, JitPack dijamin nggak mabok
+            if (a != null && title != null) {
+                val href = a.attrAsRelativeUrl("href")
+                val cover = el.selectFirst("img")?.attr("data-src")?.ifBlank { null } ?: el.selectFirst("img")?.src()
+                Manga(
+                    id = generateUid(href),
+                    title = title,
+                    url = href,
+                    publicUrl = a.attrAsAbsoluteUrl("href"),
+                    coverUrl = cover,
+                    largeCoverUrl = cover,
+                    rating = RATING_UNKNOWN,
+                    contentRating = ContentRating.ADULT,
+                    tags = emptySet(),
+                    state = null,
+                    authors = emptySet(),
+                    source = source,
+                )
+            } else {
+                null
+            }
         }
 
         return rawList.distinctBy { it.id }
@@ -86,7 +89,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
         val title = doc.selectFirst("h1, .title, .manga-title")?.text()?.trim() ?: manga.title
         val description = doc.selectFirst(".synopsis, .description, .summary")?.text()?.trim().orEmpty()
 
-        val chapters: List<MangaChapter> = doc.select("a.chapter-link, li.chapter a, .episode a").mapNotNull<Element, MangaChapter> { a ->
+        val chapters = doc.select("a.chapter-link, li.chapter a, .episode a").map { a ->
             val url = a.attrAsRelativeUrl("href")
             val chTitle = a.text().trim()
             MangaChapter(
@@ -117,7 +120,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
         val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
 
         return doc.select("img.reader-img, .chapter-image img, img[data-src], img[src*='storage']")
-            .mapNotNull<Element, MangaPage> { img ->
+            .mapNotNull { img ->
                 val url = img.attr("data-src").ifBlank { img.attr("src") }.trim()
                 if (url.isNotBlank() && !url.contains("placeholder")) {
                     MangaPage(
@@ -126,7 +129,9 @@ internal class Kaikomik(context: MangaLoaderContext) :
                         preview = null,
                         source = source
                     )
-                } else null
+                } else {
+                    null
+                }
             }
     }
 }
