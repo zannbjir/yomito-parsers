@@ -131,6 +131,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
 		val mangaList = mutableListOf<Manga>()
 		val seen = mutableSetOf<String>()
 
+		// Kaikomik /comics page has manga cards with onclick="window.location.href='/manga/{id}'"
 		doc.select("[onclick*='/manga/']").forEach { el ->
 			val onclick = el.attr("onclick")
 			val mangaPath = onclick.substringAfter("='").substringBefore("'")
