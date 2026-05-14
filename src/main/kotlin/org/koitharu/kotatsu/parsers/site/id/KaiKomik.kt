@@ -271,16 +271,17 @@ internal class Kaikomik(context: MangaLoaderContext) :
 			img.attr("src").ifBlank { img.attr("data-src") }
 		}?.ifBlank { null } ?: manga.coverUrl
 
-		// Clean up wsrv.nl proxy URLs
-		if (coverUrl.contains("wsrv.nl/?url=")) {
-            coverUrl = coverUrl.substringAfter("wsrv.nl/?url=")
-                    .substringBefore("&")
-                    .substringBefore("?")
-                    // Decode URL-encoded characters
-                    coverUrl = java.net.URLDecoder.decode(coverUrl, "UTF-8")
-                }
+		if (coverUrl?.contains("wsrv.nl/?url=") == true) {
+			coverUrl = coverUrl.substringAfter("wsrv.nl/?url=")
+				.substringBefore("&")
+				.substringBefore("?")
+			// Decode URL-encoded characters
+			coverUrl = java.net.URLDecoder.decode(coverUrl, "UTF-8")
+		}
+
 		// Also try og:image meta tag for cover
-		if (coverUrl.isBlank() || coverUrl == manga.coverUrl) {
+		// Ganti .isBlank() jadi .isNullOrBlank()
+		if (coverUrl.isNullOrBlank() || coverUrl == manga.coverUrl) {
 			doc.selectFirst("meta[property=og:image]")?.attr("content")?.let { ogImage ->
 				if (ogImage.isNotBlank()) {
 					coverUrl = if (ogImage.contains("wsrv.nl/?url=")) {
@@ -294,7 +295,7 @@ internal class Kaikomik(context: MangaLoaderContext) :
 				}
 			}
 		}
-
+        
 		val chapters = doc.select("a[href*='/read/']").mapChapters(reversed = true) { index, el ->
 			val chUrl = el.attrAsRelativeUrlOrNull("href") ?: return@mapChapters null
 			val dataNum = el.attr("data-num").toFloatOrNull()
