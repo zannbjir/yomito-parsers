@@ -14,6 +14,8 @@ internal class Ikiru(context: MangaLoaderContext) :
 	NatsuParser(context, MangaParserSource.IKIRU, pageSize = 24) {
 
 	override val configKeyDomain = ConfigKey.Domain(
+        "06.ikiru.wtf",
+        "05.ikiru.wtf",
 		"04.ikiru.wtf",
 		"03.ikiru.wtf",
 		"02.ikiru.wtf",
