@@ -77,7 +77,6 @@ internal class Ryukomik(context: MangaLoaderContext) :
 	}
 
 	private fun parseMangaList(doc: Document): List<Manga> {
-		// komiku.id pakai WordPress dengan custom theme
 		return doc.select("div.bge, div.ls3, article.manga").mapNotNull { el ->
 			val a = el.selectFirst("a") ?: return@mapNotNull null
 			val href = a.attr("href").ifBlank { return@mapNotNull null }
@@ -110,7 +109,6 @@ internal class Ryukomik(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getDetails(manga: Manga): Manga {
-		// URL pattern: /komiku/slug → api: api.komiku.id/manga/slug/
 		val slug = manga.url.trimEnd('/').substringAfterLast('/')
 		val url = "https://$apiDomain/manga/$slug/"
 		val doc = webClient.httpGet(url, buildHeaders()).parseHtml()
@@ -125,8 +123,8 @@ internal class Ryukomik(context: MangaLoaderContext) :
 		val desc = doc.selectFirst("div.desc, div.entry-content p")?.text()?.trim()
 
 		val infoTable = doc.selectFirst("table.inftable, div.infox")
-		val statusText = infoTable?.selectFirst("tr:has(td:contains(Status)) td:last-child, 
-			span.imptdt:contains(Status)")?.text().orEmpty()
+        
+		val statusText = infoTable?.selectFirst("tr:has(td:contains(Status)) td:last-child, span.imptdt:contains(Status)")?.text().orEmpty()
 		val state = when {
 			statusText.contains("Ongoing", ignoreCase = true) -> MangaState.ONGOING
 			statusText.contains("Completed", ignoreCase = true) ||
@@ -134,8 +132,7 @@ internal class Ryukomik(context: MangaLoaderContext) :
 			else -> null
 		}
 
-		val authorText = infoTable?.selectFirst("tr:has(td:contains(Pengarang)) td:last-child,
-			span.imptdt:contains(Author)")?.text()?.trim().orEmpty()
+		val authorText = infoTable?.selectFirst("tr:has(td:contains(Pengarang)) td:last-child, span.imptdt:contains(Author)")?.text()?.trim().orEmpty()
 		val authors = if (authorText.isNotBlank()) setOf(authorText) else emptySet()
 
 		val tags = doc.select("div.gnr a, div.mgen a").map { a ->
@@ -167,7 +164,7 @@ internal class Ryukomik(context: MangaLoaderContext) :
 				branch = null,
 				source = source,
 			)
-		}.sortBy { it.number }
+		}.sortedBy { it.number }
 
 		return manga.copy(
 			title = title,
@@ -182,14 +179,12 @@ internal class Ryukomik(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		// URL chapter: /chapter/slug → api: api.komiku.id/ch/slug/
 		val slug = chapter.url.trimEnd('/').substringAfterLast('/')
 		val url = "https://$apiDomain/ch/$slug/"
 		val doc = webClient.httpGet(url, buildHeaders()).parseHtml()
 
 		return doc.select("div#Baca_Komik img, div.entry-content img").mapNotNull { img ->
 			val src = img.attr("data-src").ifBlank { img.attr("src") }.ifBlank { return@mapNotNull null }
-			// Skip placeholder / spacer
 			if (src.endsWith("spacer.gif") || src.contains("loading")) return@mapNotNull null
 			MangaPage(
 				id = generateUid(src),
@@ -202,14 +197,12 @@ internal class Ryukomik(context: MangaLoaderContext) :
 
 	private fun parseDate(text: String): Long {
 		if (text.isBlank()) return 0L
-		// Coba format standar dulu
 		val formats = arrayOf("MMMM dd, yyyy", "dd MMM yyyy", "yyyy-MM-dd")
 		for (fmt in formats) {
 			try {
 				return SimpleDateFormat(fmt, Locale.ENGLISH).parse(text)?.time ?: continue
 			} catch (_: Exception) {}
 		}
-		// Fallback ke relative date
 		val lower = text.lowercase(Locale.ROOT)
 		val num = Regex("""(\d+)""").find(lower)?.value?.toLongOrNull() ?: 1L
 		val now = System.currentTimeMillis()
