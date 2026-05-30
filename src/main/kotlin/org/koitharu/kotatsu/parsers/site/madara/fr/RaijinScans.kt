@@ -1,5 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.madara.fr
 
+import org.json.JSONArray
+import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -23,6 +25,7 @@ import org.koitharu.kotatsu.parsers.util.generateUid
 import org.koitharu.kotatsu.parsers.util.mapChapters
 import org.koitharu.kotatsu.parsers.util.mapNotNullToSet
 import org.koitharu.kotatsu.parsers.util.parseHtml
+import org.koitharu.kotatsu.parsers.util.parseJson
 import org.koitharu.kotatsu.parsers.util.selectFirstOrThrow
 import org.koitharu.kotatsu.parsers.util.selectLast
 import org.koitharu.kotatsu.parsers.util.src
@@ -30,10 +33,12 @@ import org.koitharu.kotatsu.parsers.util.textOrNull
 import org.koitharu.kotatsu.parsers.util.toAbsoluteUrl
 import org.koitharu.kotatsu.parsers.util.toTitleCase
 import org.koitharu.kotatsu.parsers.util.urlEncoded
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.EnumSet
 import java.util.Locale
+import java.util.Base64
 
 @MangaSourceParser("RAIJINSCANS", "RaijinScans", "fr")
 internal class RaijinScans(context: MangaLoaderContext) :
@@ -231,7 +236,21 @@ internal class RaijinScans(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
+		val chapterUrl = chapter.url.toAbsoluteUrl(domain)
+		val doc = webClient.httpGet(chapterUrl).parseHtml()
+		decodeRjAjaxConfig(doc)?.let { config ->
+			val headers = getRequestHeaders().newBuilder()
+				.set("Referer", chapterUrl)
+				.set("X-Requested-With", "XMLHttpRequest")
+				.build()
+			val response = webClient.httpPost(config.ajaxUrl.toHttpUrl(), config.form, headers).parseJson()
+			val pages = response
+				.optJSONObject(config.responseKeys.getString(1))
+				?.optJSONArray(config.responseKeys.getString(2))
+				?: JSONArray()
+			val imageKey = config.responseKeys.getString(4)
+			return pages.mapJsonPages(imageKey)
+		}
 
 		return doc.select(selectPage).map { element ->
 			val encodedUrl = element.attr("data-src")
@@ -244,6 +263,72 @@ internal class RaijinScans(context: MangaLoaderContext) :
 				source = source,
 			)
 		}
+	}
+
+	private fun JSONArray.mapJsonPages(imageKey: String): List<MangaPage> {
+		return (0 until length()).mapNotNull { i ->
+			val imageUrl = optJSONObject(i)?.optString(imageKey)?.takeIf { it.isNotBlank() }
+				?: return@mapNotNull null
+			MangaPage(
+				id = generateUid(imageUrl),
+				url = imageUrl,
+				preview = null,
+				source = source,
+			)
+		}
+	}
+
+	private fun decodeRjAjaxConfig(doc: Document): RjAjaxConfig? {
+		val script = doc.select("script:containsData(RJ map sync)")
+			.firstOrNull()
+			?.data()
+			?: return null
+		val chunks = RJ_CHUNK_REGEX.findAll(script)
+			.map { match ->
+				match.groupValues[1].toInt(36) to decodeBase64Chunk(match.groupValues[2])
+			}
+			.sortedBy { it.first }
+			.joinToString(separator = "") { it.second }
+		if (chunks.isBlank()) return null
+
+		val root = JSONArray(chunks)
+		val order = root.getJSONArray(0)
+		val scrambled = root.getJSONArray(1)
+		val values = arrayOfNulls<Any>(order.length())
+		for (i in 0 until order.length()) {
+			values[order.getInt(i)] = scrambled.get(i)
+		}
+
+		val fieldNames = values[13] as? JSONArray ?: return null
+		val responseKeys = values[14] as? JSONArray ?: return null
+		val ajaxUrl = values[0]?.jsonStringOrNull() ?: return null
+		val action = values[12]?.jsonStringOrNull() ?: return null
+		val empty = values[1]?.jsonStringOrNull().orEmpty()
+		val form = LinkedHashMap<String, String>(fieldNames.length() + 1)
+		form["action"] = action
+		form[fieldNames.getString(0)] = empty
+		form[fieldNames.getString(1)] = values[2].jsonStringOrEmpty()
+		form[fieldNames.getString(2)] = values[3].jsonStringOrEmpty()
+		form[fieldNames.getString(3)] = values[4].jsonStringOrEmpty()
+		form[fieldNames.getString(4)] = values[5].jsonStringOrEmpty()
+		form[fieldNames.getString(5)] = values[6].jsonStringOrEmpty()
+		form[fieldNames.getString(6)] = values[8].jsonStringOrEmpty()
+		form[fieldNames.getString(7)] = values[9].jsonStringOrEmpty()
+		form[fieldNames.getString(8)] = values[7].jsonStringOrEmpty()
+		form[fieldNames.getString(9)] = empty
+		return RjAjaxConfig(ajaxUrl, form, responseKeys)
+	}
+
+	private fun decodeBase64Chunk(value: String): String {
+		val padded = value + "=".repeat((4 - value.length % 4) % 4)
+		return String(Base64.getDecoder().decode(padded))
+	}
+
+	private fun Any?.jsonStringOrEmpty(): String = jsonStringOrNull().orEmpty()
+
+	private fun Any?.jsonStringOrNull(): String? = when (this) {
+		null, JSONObject.NULL -> null
+		else -> toString()
 	}
 
 	override suspend fun fetchAvailableTags(): Set<MangaTag> {
@@ -303,5 +388,15 @@ internal class RaijinScans(context: MangaLoaderContext) :
 
 			else -> parseChapterDate(SimpleDateFormat(datePattern, sourceLocale), date)
 		}
+	}
+
+	private data class RjAjaxConfig(
+		val ajaxUrl: String,
+		val form: Map<String, String>,
+		val responseKeys: JSONArray,
+	)
+
+	private companion object {
+		private val RJ_CHUNK_REGEX = Regex(""""([0-9a-z]+)\.([A-Za-z0-9+/=_-]+)"""")
 	}
 }
