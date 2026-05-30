@@ -304,7 +304,6 @@ internal class Comix(context: MangaLoaderContext) :
     private fun apiUrl(path: String): String = "https://$domain/api/v1/${path.removePrefix("/")}"
 
     private suspend fun webViewApiJson(apiPath: String): JSONObject {
-        logDebug("webViewApiJson start path=$apiPath")
         return evaluateWebViewJson(
             label = apiPath,
             script = buildWebViewApiScript("return JSON.stringify(await fetchProtected(${apiPath.toJsString()}));"),
@@ -313,7 +312,6 @@ internal class Comix(context: MangaLoaderContext) :
 
     private suspend fun webViewChapterList(hashId: String): JSONArray {
         val pathPrefix = "/api/v1/manga/$hashId/chapters?page="
-        logDebug("webViewChapterList start hashId=$hashId prefix=$pathPrefix")
         val json = evaluateWebViewJson(
             label = "chapters:$hashId",
             script = buildWebViewApiScript(
@@ -397,16 +395,16 @@ internal class Comix(context: MangaLoaderContext) :
             ),
         )
         val items = json.optJSONArray("items") ?: JSONArray()
-        logDebug("webViewChapterList done hashId=$hashId count=${items.length()} debug=${json.optJSONObject("debug")}")
         return items
     }
 
     private suspend fun evaluateWebViewJson(label: String, script: String): JSONObject {
         val bridgeScript = buildBridgeScript(script)
-        logDebug("evaluateWebViewJson intercept base=https://$domain/ label=$label scriptLen=${bridgeScript.length}")
+        val startedAt = System.currentTimeMillis()
+        val bridgeUrl = "https://$domain/?kotatsu_comix_bridge=$startedAt"
         val requests = runCatching {
             context.interceptWebViewRequests(
-                "https://$domain/",
+                bridgeUrl,
                 InterceptionConfig(
                     timeoutMs = WEBVIEW_API_TIMEOUT,
                     maxRequests = 1,
@@ -415,36 +413,29 @@ internal class Comix(context: MangaLoaderContext) :
                 ),
             )
         }.getOrElse { e ->
-            throw ParseException("Comix WebView API interception failed", "https://$domain/", e)
+            throw ParseException("Comix WebView API interception failed", bridgeUrl, e)
         }
         val resultUrl = requests.firstOrNull()?.url
-            ?: throw ParseException("Comix WebView API did not return a bridge result", "https://$domain/")
-        logDebug("evaluateWebViewJson bridge label=$label url=${resultUrl.take(LOG_EXCERPT)}")
+            ?: throw ParseException("Comix WebView API did not return a bridge result", bridgeUrl)
         val decoded = when {
-            resultUrl.contains("/error?", ignoreCase = true) -> {
+            resultUrl.contains("/error", ignoreCase = true) -> {
                 val message = resultUrl.queryParameterValue("msg") ?: "unknown WebView error"
-                throw ParseException("Comix WebView API failed: $message", "https://$domain/")
+                throw ParseException("Comix WebView API failed: $message", bridgeUrl)
             }
             else -> resultUrl.queryParameterValue("data")
-                ?: throw ParseException("Comix WebView API bridge result missing data", "https://$domain/")
+                ?: throw ParseException("Comix WebView API bridge result missing data", bridgeUrl)
         }
-        logDebug("evaluateWebViewJson decoded label=$label len=${decoded.length} excerpt=${decoded.take(LOG_EXCERPT)}")
         if (decoded == CLOUDFLARE_BLOCKED || isCloudflarePage(decoded)) {
-            logDebug("evaluateWebViewJson cloudflare label=$label")
-            requestCloudflareVerification("https://$domain/")
+            requestCloudflareVerification(bridgeUrl)
         }
         if (decoded.isBlank()) {
-            logDebug("evaluateWebViewJson blank label=$label")
-            throw ParseException("Comix WebView API returned an empty response", "https://$domain/")
+            throw ParseException("Comix WebView API returned an empty response", bridgeUrl)
         }
         val json = runCatching { JSONObject(decoded) }.getOrElse { e ->
-            logDebug("evaluateWebViewJson invalid json label=$label")
-            throw ParseException("Comix WebView API returned invalid JSON: ${decoded.take(200)}", "https://$domain/", e)
+            throw ParseException("Comix WebView API returned invalid JSON: ${decoded.take(200)}", bridgeUrl, e)
         }
-        logDebug("evaluateWebViewJson json label=$label keys=${json.keys().asSequence().joinToString(",")}")
         json.optString("error").nullIfEmpty()?.let { error ->
-            logDebug("evaluateWebViewJson error label=$label error=$error")
-            throw ParseException("Comix WebView API failed: $error", "https://$domain/")
+            throw ParseException("Comix WebView API failed: $error", bridgeUrl)
         }
         return json
     }
@@ -474,7 +465,7 @@ internal class Comix(context: MangaLoaderContext) :
         return """
             (async () => {
                 const probePath = "/manga/g2rk/chapters";
-                const tokenRegex = /^[A-Za-z0-9_-]{40,200}$/;
+                const tokenRegex = /^[A-Za-z0-9_-]{20,200}$/;
                 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
                 const challengeDetected = () => {
                     const root = document.documentElement;
@@ -543,7 +534,9 @@ internal class Comix(context: MangaLoaderContext) :
                 try {
                     let glue = null;
                     for (let attempt = 0; attempt < 80; attempt++) {
-                        if (challengeDetected()) return "$CLOUDFLARE_BLOCKED";
+                        if (challengeDetected()) {
+                            return "$CLOUDFLARE_BLOCKED";
+                        }
                         glue = findGlue();
                         if (glue) break;
                         await sleep(250);
@@ -577,7 +570,8 @@ internal class Comix(context: MangaLoaderContext) :
                         let text = "";
                         let signedUrl = "";
                         let lastError = "";
-                        for (const signablePath of signCandidates(apiPath)) {
+                        const candidates = signCandidates(apiPath);
+                        for (const signablePath of candidates) {
                             const sig = glue.signer(signablePath);
                             if (!sig) {
                                 lastError = "signer returned empty token";
@@ -673,10 +667,6 @@ internal class Comix(context: MangaLoaderContext) :
             lower.contains("turnstile")
     }
 
-    private fun logDebug(message: String) {
-        println("COMIX_DEBUG: $message")
-    }
-
     private fun parseTerms(json: JSONObject): Set<MangaTag> {
         val tags = LinkedHashSet<MangaTag>()
         for (key in TERM_KEYS) {
@@ -745,7 +735,6 @@ internal class Comix(context: MangaLoaderContext) :
         private const val WEBVIEW_API_TIMEOUT = 90000L
         private const val CHAPTER_API_LIMIT = 100
         private const val MAX_CHAPTER_API_PAGES = 30
-        private const val LOG_EXCERPT = 500
         private const val CLOUDFLARE_BLOCKED = "CLOUDFLARE_BLOCKED"
         private const val INTERCEPT_RESULT_URL = "https://kotatsu.intercept/result"
         private const val INTERCEPT_ERROR_URL = "https://kotatsu.intercept/error"
