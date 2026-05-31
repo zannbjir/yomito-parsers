@@ -1,3 +1,5 @@
+package org.koitharu.kotatsu.parsers.site.id
+
 import okhttp3.Headers
 import org.json.JSONObject
 import org.jsoup.nodes.Document
