@@ -32,6 +32,7 @@ internal class Komikapk(context: MangaLoaderContext) :
     private fun noCacheHeaders(): Headers = getRequestHeaders().newBuilder()
         .set("Cache-Control", "no-cache, no-store, max-age=0")
         .set("Pragma", "no-cache")
+        .set("x-sveltekit-invalidated", "1")
         .build()
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
@@ -277,7 +278,7 @@ internal class Komikapk(context: MangaLoaderContext) :
         val bust = System.currentTimeMillis()
 
         try {
-            val dataUrl = "$chapterUrl/__data.json?_=$bust"
+            val dataUrl = "$chapterUrl/__data.json?x-sveltekit-invalidated=1&_=$bust"
             val json = webClient.httpGet(dataUrl, noCacheHeaders()).parseJson()
             val pages = parsePagesFromJson(json)
             if (pages.isNotEmpty()) return pages
@@ -285,28 +286,17 @@ internal class Komikapk(context: MangaLoaderContext) :
         }
 
         val doc = webClient.httpGet("$chapterUrl?_=$bust", noCacheHeaders()).parseHtml()
-        return parsePagesFromHtml(doc, chapter)
+        val htmlPages = parsePagesFromHtml(doc, chapter)
+        if (htmlPages.isNotEmpty()) return htmlPages
+
+        return buildFallbackPages(doc, chapter)
     }
 
     private fun rewriteImageUrl(raw: String): String {
         if (raw.isBlank()) return raw
         if (raw.startsWith(cdnHost)) return raw
-
-        val storagePrefixes = listOf(
-            "https://storage.com/",
-            "http://storage.com/",
-            "https://storage.komikapk.app/",
-            "https://storage.komikapk2.com/",
-        )
-        for (p in storagePrefixes) {
-            if (raw.startsWith(p)) {
-                return cdnChapterPrefix + raw.removePrefix(p)
-            }
-        }
-
         val idx = raw.indexOf("komikapk2-chapter/")
-        if (idx >= 0) return "$cdnHost/" + raw.substring(idx)
-
+        if (idx >= 0) return cdnHost + "/" + raw.substring(idx)
         if (raw.startsWith("//")) return "https:$raw"
         if (raw.startsWith("/")) return "https://$domain$raw"
         return raw
@@ -363,5 +353,34 @@ internal class Komikapk(context: MangaLoaderContext) :
             if (pages.isNotEmpty()) return pages
         }
         return emptyList()
+    }
+
+    private fun buildFallbackPages(doc: Document, chapter: MangaChapter): List<MangaPage> {
+        val segments = chapter.url.split("/").filter { it.isNotBlank() }
+        val comicSlug = segments.getOrNull(1) ?: return emptyList()
+        val chapterName = segments.getOrNull(3) ?: return emptyList()
+
+        val total = run {
+            val altRegex = Regex("""image-komik[^"']*?-(\d+)\s*/\s*(\d+)""", RegexOption.IGNORE_CASE)
+            val html = doc.html()
+            val match = altRegex.find(html)
+            val fromAlt = match?.groupValues?.getOrNull(2)?.toIntOrNull()
+            if (fromAlt != null && fromAlt > 0) return@run fromAlt
+
+            val urlRegex = Regex("""komikapk2-chapter/[^"'\s>]*?/image-(\d{1,4})\.webp""", RegexOption.IGNORE_CASE)
+            val maxIdx = urlRegex.findAll(html)
+                .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+                .maxOrNull()
+            if (maxIdx != null) return@run maxIdx + 1
+
+            0
+        }
+
+        if (total <= 0) return emptyList()
+
+        return (0 until total).map { i ->
+            val url = "${cdnChapterPrefix}$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
+            MangaPage(id = generateUid(url), url = url, preview = null, source = source)
+        }
     }
 }
