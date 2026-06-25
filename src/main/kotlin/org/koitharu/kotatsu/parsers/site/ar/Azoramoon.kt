@@ -383,6 +383,10 @@ internal class Azoramoon(context: MangaLoaderContext) :
 
 		val props = Parser.unescapeEntities(propsEscaped, false)
 		val root = props.toJSONObjectOrNull() ?: return null
+		// The chapters island embeds the full chapter list in the "initialChap" prop
+		// (the "post" prop only carries a _count.chapters number, not the array).
+		(unboxSerializedValue(root.opt("initialChap")) as? JSONArray)?.let { return it }
+		// Fallback for older markup that nested chapters inside "post".
 		val post = unboxSerializedValue(root.opt("post")) as? JSONObject ?: return null
 		return unboxSerializedValue(post.opt("chapters")) as? JSONArray
 	}

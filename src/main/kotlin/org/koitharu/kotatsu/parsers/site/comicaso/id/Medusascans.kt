@@ -8,4 +8,7 @@ import org.koitharu.kotatsu.parsers.site.comicaso.ComicasoParser
 
 @MangaSourceParser("MEDUSASCANS", "Medusascans", "id", ContentType.HENTAI)
 internal class Medusascans(context: MangaLoaderContext) :
-	ComicasoParser(context, MangaParserSource.MEDUSASCANS, "medusascans.pro", pageSize = 16)
+	ComicasoParser(context, MangaParserSource.MEDUSASCANS, "v3.comicaso.pro", pageSize = 20) {
+
+	override val apiSource: String = "medusascans"
+}

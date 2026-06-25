@@ -1,7 +1,5 @@
 package org.koitharu.kotatsu.parsers.site.comicaso
 
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.config.ConfigKey
@@ -22,10 +20,11 @@ internal abstract class ComicasoParser(
 
 	override val sourceLocale: Locale = Locale("id")
 
+	protected abstract val apiSource: String
+
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.UPDATED,
-		SortOrder.POPULARITY,
-		SortOrder.ALPHABETICAL,
+		SortOrder.NEWEST,
 	)
 
 	override val filterCapabilities: MangaListFilterCapabilities
@@ -46,106 +45,114 @@ internal abstract class ComicasoParser(
 		),
 	)
 
-	// Cache untuk index.json
-	private var mangaListCache: JSONArray? = null
-	private val mutex = Mutex()
-
-	// Fetch dan cache index.json
-	private suspend fun getMangaIndex(): JSONArray = mutex.withLock {
-		mangaListCache ?: run {
-			val url = "https://$domain/wp-content/static/manga/index.json"
-			val arr = webClient.httpGet(url).parseJsonArray()
-			mangaListCache = arr
-			arr
-		}
-	}
-
 	private suspend fun fetchAvailableTags(): Set<MangaTag> {
-		val index = getMangaIndex()
-		val tagSet = LinkedHashSet<String>()
-		for (i in 0 until index.length()) {
-			val jo = index.getJSONObject(i)
-			val genres = jo.optJSONArray("genres") ?: continue
-			for (j in 0 until genres.length()) {
-				tagSet.add(genres.getString(j))
-			}
-		}
-		return tagSet.mapToSet { genre ->
-			MangaTag(
-				key = genre.lowercase(sourceLocale),
-				title = genre.toTitleCase(sourceLocale),
-				source = source,
+		val url = "https://$domain/api/genres.php?source=$apiSource"
+		val json = webClient.httpGet(url).parseJson()
+		val arr = json.optJSONObject("data")?.optJSONArray(apiSource) ?: return emptySet()
+		val result = LinkedHashSet<MangaTag>(arr.length())
+		for (i in 0 until arr.length()) {
+			val item = arr.getJSONObject(i)
+			val genre = item.optString("genre").takeIf { it.isNotBlank() } ?: continue
+			val slug = item.optString("genre_slug").ifBlank { genre.lowercase(sourceLocale) }
+			result.add(
+				MangaTag(
+					key = slug,
+					title = genre.toTitleCase(sourceLocale),
+					source = source,
+				),
 			)
 		}
+		return result
 	}
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		var list = getMangaIndex().toMangaDtoList()
+		val offset = (page - 1) * pageSize
 
-		// Filter by query
-		if (!filter.query.isNullOrEmpty()) {
-			val q = filter.query.lowercase(sourceLocale)
-			list = list.filter { it.title.lowercase(sourceLocale).contains(q) }
+		val mode = when (order) {
+			SortOrder.NEWEST -> "new"
+			else -> "update"
 		}
 
-		// Filter by tag
-		filter.tags.oneOrThrowIfMany()?.let { tag ->
-			list = list.filter { dto ->
-				dto.genres.any { it.lowercase(sourceLocale) == tag.key }
-			}
-		}
-
-		// Filter by state
-		filter.states.oneOrThrowIfMany()?.let { state ->
-			val statusStr = when (state) {
-				MangaState.ONGOING -> "on-going"
-				MangaState.FINISHED -> "end"
-				else -> null
-			}
-			if (statusStr != null) {
-				list = list.filter { it.status == statusStr }
-			}
-		}
-
-		// Filter by type
-		filter.types.oneOrThrowIfMany()?.let { type ->
-			val typeStr = when (type) {
+		val typeParam = filter.types.oneOrThrowIfMany()?.let { type ->
+			when (type) {
 				ContentType.MANGA -> "manga"
 				ContentType.MANHWA -> "manhwa"
 				ContentType.MANHUA -> "manhua"
-				else -> null
+				else -> "all"
 			}
-			if (typeStr != null) {
-				list = list.filter { it.type?.lowercase(sourceLocale) == typeStr }
-			}
+		} ?: "all"
+
+		val genreParam = filter.tags.oneOrThrowIfMany()?.key ?: ""
+		val query = filter.query.orEmpty()
+
+		val url = buildString {
+			append("https://$domain/api/home.php")
+			append("?source=").append(apiSource)
+			append("&q=").append(query.urlEncoded())
+			append("&mode=").append(mode)
+			append("&type=").append(typeParam)
+			if (genreParam.isNotEmpty()) append("&genre=").append(genreParam.urlEncoded())
+			append("&limit=").append(pageSize)
+			append("&offset=").append(offset)
 		}
 
-		// Sort
-		list = when (order) {
-			SortOrder.UPDATED -> list.sortedByDescending { it.updatedAt ?: it.mangaDate ?: 0L }
-			SortOrder.ALPHABETICAL -> list.sortedBy { it.title.lowercase(sourceLocale) }
-			else -> list // POPULARITY: urutan default dari index.json
+		val json = webClient.httpGet(url).parseJson()
+		val data = json.getJSONArray("data")
+
+		// Status filter is not supported server-side; apply client-side
+		val stateFilter = filter.states.oneOrThrowIfMany()
+
+		val result = ArrayList<Manga>(data.length())
+		for (i in 0 until data.length()) {
+			val item = data.getJSONObject(i)
+
+			if (stateFilter != null) {
+				val itemStatus = item.optString("status")
+				val expectedStatus = when (stateFilter) {
+					MangaState.ONGOING -> "on-going"
+					MangaState.FINISHED -> "end"
+					else -> null
+				}
+				if (expectedStatus != null && itemStatus != expectedStatus) continue
+			}
+
+			val slug = item.getString("slug")
+			result.add(
+				Manga(
+					id = generateUid("/komik/$slug/"),
+					url = "/komik/$slug/",
+					title = item.getString("title"),
+					altTitles = emptySet(),
+					publicUrl = "https://$domain/komik/$slug/",
+					rating = RATING_UNKNOWN,
+					contentRating = if (isNsfwSource) ContentRating.ADULT else null,
+					coverUrl = item.optString("thumbnail").ifBlank { "" },
+					tags = emptySet(),
+					state = when (item.optString("status")) {
+						"on-going" -> MangaState.ONGOING
+						"end" -> MangaState.FINISHED
+						else -> null
+					},
+					authors = emptySet(),
+					source = source,
+				),
+			)
 		}
-
-		// Pagination manual
-		val start = (page - 1) * pageSize
-		if (start >= list.size) return emptyList()
-		val end = minOf(start + pageSize, list.size)
-
-		return list.subList(start, end).map { it.toManga() }
+		return result
 	}
 
 	override suspend fun getDetails(manga: Manga): Manga {
 		val slug = manga.url.removePrefix("/komik/").removeSuffix("/")
-		val url = "https://$domain/wp-content/static/manga/$slug.json"
+		val url = "https://$domain/api/manga.php?source=$apiSource&slug=${slug.urlEncoded()}&platform=web"
 		val json = webClient.httpGet(url).parseJson()
+		val data = json.getJSONObject("data")
 
-		val title = json.getString("title")
-		val synopsis = json.optString("synopsis").takeIf { it.isNotBlank() }
-		val alternative = json.optString("alternative").takeIf { it.isNotBlank() }
-		val thumbnail = json.optString("thumbnail").takeIf { it.isNotBlank() }
-		val author = json.optString("author").takeIf { it.isNotBlank() }
-		val artist = json.optString("artist").takeIf { it.isNotBlank() }
+		val title = data.getString("title")
+		val synopsis = data.optString("synopsis").parseHtml().text().takeIf { it.isNotBlank() }
+		val alternative = data.optString("alternative").takeIf { it.isNotBlank() }
+		val thumbnail = data.optString("thumbnail").takeIf { it.isNotBlank() }
+		val author = data.optString("author").takeIf { it.isNotBlank() }
+		val artist = data.optString("artist").takeIf { it.isNotBlank() }
 
 		val description = buildString {
 			if (synopsis != null) append(synopsis)
@@ -155,18 +162,18 @@ internal abstract class ComicasoParser(
 			}
 		}.trim().takeIf { it.isNotEmpty() }
 
-		val state = when (json.optString("status")) {
+		val state = when (data.optString("status")) {
 			"on-going" -> MangaState.ONGOING
 			"end" -> MangaState.FINISHED
 			else -> null
 		}
 
-		val genresArray = json.optJSONArray("genres")
+		val genresArray = data.optJSONArray("genres")
 		val tags = if (genresArray != null) {
-			val result = LinkedHashSet<MangaTag>(genresArray.length())
+			val tagSet = LinkedHashSet<MangaTag>(genresArray.length())
 			for (i in 0 until genresArray.length()) {
 				val genre = genresArray.getString(i)
-				result.add(
+				tagSet.add(
 					MangaTag(
 						key = genre.lowercase(sourceLocale),
 						title = genre.toTitleCase(sourceLocale),
@@ -174,7 +181,7 @@ internal abstract class ComicasoParser(
 					),
 				)
 			}
-			result as Set<MangaTag>
+			tagSet as Set<MangaTag>
 		} else {
 			emptySet()
 		}
@@ -184,7 +191,7 @@ internal abstract class ComicasoParser(
 			artist?.takeIf { it != author },
 		)
 
-		val chaptersArray = json.optJSONArray("chapters") ?: JSONArray()
+		val chaptersArray = data.optJSONArray("chapters") ?: JSONArray()
 		val chapters = ArrayList<MangaChapter>(chaptersArray.length())
 		for (i in 0 until chaptersArray.length()) {
 			val ch = chaptersArray.getJSONObject(i)
@@ -205,7 +212,7 @@ internal abstract class ComicasoParser(
 				),
 			)
 		}
-        
+
 		chapters.sortBy { it.number }
 
 		return manga.copy(
@@ -220,80 +227,34 @@ internal abstract class ComicasoParser(
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
-		return doc.select("img.mjv2-page-image").map { img ->
-			val url = img.absUrl("src").ifEmpty { img.absUrl("data-src") }
+		// Parse manga slug and chapter slug from URL: /komik/{manga_slug}/{chapter_slug}/
+		val parts = chapter.url.trim('/').split("/")
+		// parts[0]="komik", parts[1]=manga_slug, parts[2]=chapter_slug
+		if (parts.size < 3) return emptyList()
+		val mangaSlug = parts[1]
+		val chapterSlug = parts[2]
+
+		val url = "https://$domain/api/chapter.php" +
+			"?source=${apiSource.urlEncoded()}" +
+			"&manga=${mangaSlug.urlEncoded()}" +
+			"&chapter=${chapterSlug.urlEncoded()}"
+
+		val json = webClient.httpGet(url).parseJson()
+		val data = json.getJSONObject("data")
+		val images = data.optJSONArray("images") ?: return emptyList()
+
+		return images.mapJSON { imgUrl ->
 			MangaPage(
-				id = generateUid(url),
-				url = url,
+				id = generateUid(imgUrl),
+				url = imgUrl,
 				preview = null,
 				source = source,
 			)
 		}
 	}
 
-	// Helper: konversi JSONArray dari index.json ke list DTO internal
-	private fun JSONArray.toMangaDtoList(): List<MangaIndexDto> {
-		val result = ArrayList<MangaIndexDto>(length())
-		for (i in 0 until length()) {
-			val jo = getJSONObject(i)
-			val genresArr = jo.optJSONArray("genres")
-			val genres = if (genresArr != null) {
-				val list = ArrayList<String>(genresArr.length())
-				for (j in 0 until genresArr.length()) list.add(genresArr.getString(j))
-				list as List<String>
-			} else {
-				emptyList()
-			}
-			result.add(
-				MangaIndexDto(
-					slug = jo.getString("slug"),
-					title = jo.getString("title"),
-					thumbnail = jo.optString("thumbnail").takeIf { it.isNotBlank() },
-					status = jo.optString("status").takeIf { it.isNotBlank() },
-					type = jo.optString("type").takeIf { it.isNotBlank() },
-					genres = genres,
-					mangaDate = jo.optLong("manga_date").takeIf { it != 0L },
-					updatedAt = jo.optLong("updated_at").takeIf { it != 0L },
-				),
-			)
-		}
-		return result
-	}
-
 	private fun extractChapterNumber(title: String): Float {
 		return Regex("""[\d]+(?:[.,]\d+)?""").find(title)
 			?.value?.replace(',', '.')?.toFloatOrNull() ?: 0f
 	}
-
-	// Internal DTO untuk index.json
-	private data class MangaIndexDto(
-		val slug: String,
-		val title: String,
-		val thumbnail: String?,
-		val status: String?,
-		val type: String?,
-		val genres: List<String>,
-		val mangaDate: Long?,
-		val updatedAt: Long?,
-	)
-
-	private fun MangaIndexDto.toManga(): Manga = Manga(
-		id = generateUid("/komik/$slug/"),
-		url = "/komik/$slug/",
-		title = title,
-		altTitles = emptySet(),
-		publicUrl = "https://$domain/komik/$slug/",
-		rating = RATING_UNKNOWN,
-		contentRating = if (isNsfwSource) ContentRating.ADULT else null,
-		coverUrl = thumbnail ?: "",
-		tags = emptySet(),
-		state = when (status) {
-			"on-going" -> MangaState.ONGOING
-			"end" -> MangaState.FINISHED
-			else -> null
-		},
-		authors = emptySet(),
-		source = source,
-	)
 }
