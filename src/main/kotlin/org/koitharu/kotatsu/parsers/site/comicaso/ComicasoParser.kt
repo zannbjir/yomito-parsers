@@ -1,6 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.comicaso
 
 import org.json.JSONArray
+import org.jsoup.Jsoup
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
@@ -148,7 +149,7 @@ internal abstract class ComicasoParser(
 		val data = json.getJSONObject("data")
 
 		val title = data.getString("title")
-		val synopsis = data.optString("synopsis").parseHtml().text().takeIf { it.isNotBlank() }
+		val synopsis = Jsoup.parse(data.optString("synopsis")).text().takeIf { it.isNotBlank() }
 		val alternative = data.optString("alternative").takeIf { it.isNotBlank() }
 		val thumbnail = data.optString("thumbnail").takeIf { it.isNotBlank() }
 		val author = data.optString("author").takeIf { it.isNotBlank() }
@@ -243,14 +244,15 @@ internal abstract class ComicasoParser(
 		val data = json.getJSONObject("data")
 		val images = data.optJSONArray("images") ?: return emptyList()
 
-		return images.mapJSON { imgUrl ->
-			MangaPage(
-				id = generateUid(imgUrl),
-				url = imgUrl,
-				preview = null,
-				source = source,
-			)
-		}
+		return (0 until images.length()).map { i ->
+            val imgUrl = images.getString(i)
+            MangaPage(
+                id = generateUid(imgUrl),
+                url = imgUrl,
+                preview = null,
+                source = source,
+            )
+        }
 	}
 
 	private fun extractChapterNumber(title: String): Float {
