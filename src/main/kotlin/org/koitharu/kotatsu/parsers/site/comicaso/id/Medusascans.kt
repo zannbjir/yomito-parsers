@@ -10,5 +10,5 @@ import org.koitharu.kotatsu.parsers.site.comicaso.ComicasoParser
 internal class Medusascans(context: MangaLoaderContext) :
 	ComicasoParser(context, MangaParserSource.MEDUSASCANS, "v3.comicaso.pro", pageSize = 20) {
 
-	override val apiSource: String = "medusascans"
+	override val apiSource: String = "medusa"
 }

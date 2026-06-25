@@ -100,7 +100,6 @@ internal abstract class ComicasoParser(
 		val json = webClient.httpGet(url).parseJson()
 		val data = json.getJSONArray("data")
 
-		// Status filter is not supported server-side; apply client-side
 		val stateFilter = filter.states.oneOrThrowIfMany()
 
 		val result = ArrayList<Manga>(data.length())
@@ -146,6 +145,11 @@ internal abstract class ComicasoParser(
 		val slug = manga.url.removePrefix("/komik/").removeSuffix("/")
 		val url = "https://$domain/api/manga.php?source=$apiSource&slug=${slug.urlEncoded()}&platform=web"
 		val json = webClient.httpGet(url).parseJson()
+
+		if (!json.optBoolean("ok", true) && json.optBoolean("locked", false)) {
+			throw Exception(json.optString("message", "Content locked: login required"))
+		}
+
 		val data = json.getJSONObject("data")
 
 		val title = data.getString("title")
@@ -228,31 +232,59 @@ internal abstract class ComicasoParser(
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		// Parse manga slug and chapter slug from URL: /komik/{manga_slug}/{chapter_slug}/
 		val parts = chapter.url.trim('/').split("/")
-		// parts[0]="komik", parts[1]=manga_slug, parts[2]=chapter_slug
 		if (parts.size < 3) return emptyList()
 		val mangaSlug = parts[1]
 		val chapterSlug = parts[2]
 
-		val url = "https://$domain/api/chapter.php" +
+		// Re-fetch manga detail to get a fresh, IP-bound chapter token
+		val detailUrl = "https://$domain/api/manga.php" +
 			"?source=${apiSource.urlEncoded()}" +
-			"&manga=${mangaSlug.urlEncoded()}" +
-			"&chapter=${chapterSlug.urlEncoded()}"
+			"&slug=${mangaSlug.urlEncoded()}" +
+			"&platform=web"
+		val detailJson = webClient.httpGet(detailUrl).parseJson()
+
+		var chapterToken = ""
+		val chaptersArray = detailJson.optJSONObject("data")?.optJSONArray("chapters")
+		if (chaptersArray != null) {
+			for (i in 0 until chaptersArray.length()) {
+				val ch = chaptersArray.getJSONObject(i)
+				if (ch.optString("slug") == chapterSlug) {
+					chapterToken = ch.optString("chapter_token")
+					break
+				}
+			}
+		}
+
+		val url = buildString {
+			append("https://$domain/api/chapter.php")
+			append("?source=").append(apiSource.urlEncoded())
+			append("&manga=").append(mangaSlug.urlEncoded())
+			append("&chapter=").append(chapterSlug.urlEncoded())
+			append("&platform=web")
+			if (chapterToken.isNotBlank()) {
+				append("&token=").append(chapterToken.urlEncoded())
+			}
+		}
 
 		val json = webClient.httpGet(url).parseJson()
+
+		if (!json.optBoolean("ok", true) && json.optBoolean("locked", false)) {
+			throw Exception(json.optString("message", "Content locked: login required"))
+		}
+
 		val data = json.getJSONObject("data")
 		val images = data.optJSONArray("images") ?: return emptyList()
 
 		return (0 until images.length()).map { i ->
-            val imgUrl = images.getString(i)
-            MangaPage(
-                id = generateUid(imgUrl),
-                url = imgUrl,
-                preview = null,
-                source = source,
-            )
-        }
+			val imgUrl = images.getString(i)
+			MangaPage(
+				id = generateUid(imgUrl),
+				url = imgUrl,
+				preview = null,
+				source = source,
+			)
+		}
 	}
 
 	private fun extractChapterNumber(title: String): Float {

@@ -1,6 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.id
 
 import org.jsoup.Jsoup
+import org.json.JSONArray
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -201,28 +202,28 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val doc = webClient.httpGet("https://$domain${chapter.url}").parseHtml()
+    val doc = webClient.httpGet("https://$domain${chapter.url}").parseHtml()
 
-		val scriptContent = doc.select("script").firstOrNull { script ->
-			script.data().contains("originalImages")
-		}?.data() ?: return emptyList()
+    val scriptContent = doc.select("script").firstOrNull { script ->
+        script.data().contains("originalImages")
+    }?.data() ?: return emptyList()
 
-		val imagesJson = Regex("""const originalImages\s*=\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL)
-			.find(scriptContent)?.groupValues?.get(1) ?: return emptyList()
+    // Extract raw JSON array string dari script
+    val imagesJson = Regex("""const originalImages\s*=\s*(\[.*?\])""", RegexOption.DOT_MATCHES_ALL)
+        .find(scriptContent)?.groupValues?.get(1) ?: return emptyList()
 
-		val imageUrls = Regex(""""(https?://[^"]+)"""").findAll(imagesJson)
-			.map { it.groupValues[1] }
-			.toList()
+    val imagesArray = JSONArray(imagesJson)
 
-		return imageUrls.mapIndexed { index, url ->
-			MangaPage(
-				id = generateUid("$index-${chapter.url}"),
-				url = url,
-				preview = null,
-				source = source,
-			)
-		}
-	}
+    return (0 until imagesArray.length()).map { i ->
+        val url = imagesArray.getString(i)
+        MangaPage(
+            id = generateUid("$i-${chapter.url}"),
+            url = url,
+            preview = null,
+            source = source,
+        )
+    }
+}
 
 	private fun buildGenreList(): Set<MangaTag> = listOf(
 		"action" to "Action", "adventure" to "Adventure", "comedy" to "Comedy",
