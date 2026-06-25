@@ -1,5 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.id
 
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -17,7 +19,6 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 
 	override val configKeyDomain = ConfigKey.Domain("ryzukomik.my.id")
 
-	// Base path setelah redesign situs
 	private val basePath = "/komiku"
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
@@ -67,7 +68,9 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 
 		val json = webClient.httpGet(url).parseJson()
 		val gridHtml = json.getString("grid")
-		val doc = gridHtml.parseHtml()
+		// parseHtml() hanya bisa dipanggil di Response, bukan String
+		// jadi pakai Jsoup.parse() langsung untuk parse HTML dari String
+		val doc = Jsoup.parse(gridHtml)
 
 		return doc.select("div.group").mapNotNull { el ->
 			parseMangaFromCard(el)
@@ -106,12 +109,11 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 		val title = doc.selectFirst("h1")?.text()?.trim() ?: manga.title
 		val coverUrl = doc.selectFirst("img[src*=\"thumbnail.komiku\"]")?.attr("src")?.ifBlank { null }
 
-		val labels = doc.select("span.text-neutral-500")
 		var status: MangaState? = null
 		var author: String? = null
 		val genres = mutableSetOf<MangaTag>()
 
-		for (label in labels) {
+		for (label in doc.select("span.text-neutral-500")) {
 			when (label.text().trim()) {
 				"Status" -> {
 					val value = label.nextElementSibling()?.text()?.trim().orEmpty()
@@ -128,8 +130,7 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 				}
 				"Genre" -> {
 					label.nextElementSibling()?.select("a[href*=genre]")?.forEach { a ->
-						val genreHref = a.attr("href")
-						val genreKey = genreHref.substringAfterLast("=").trim()
+						val genreKey = a.attr("href").substringAfterLast("=").trim()
 						val genreName = a.text().trim()
 						if (genreKey.isNotBlank() && genreName.isNotBlank()) {
 							genres.add(MangaTag(key = genreKey, title = genreName, source = source))
@@ -147,7 +148,7 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 			it.text().trim() == "Alternatif"
 		}?.nextElementSibling()?.text()?.trim()?.ifBlank { null }
 
-		val chapters = parseChapterList(doc, manga.url)
+		val chapters = parseChapterList(doc)
 
 		return manga.copy(
 			title = title,
@@ -162,24 +163,20 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 		)
 	}
 
-	private fun parseChapterList(doc: org.jsoup.nodes.Document, mangaUrl: String): List<MangaChapter> {
+	private fun parseChapterList(doc: Document): List<MangaChapter> {
 		val dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ROOT)
-		val chapterItems = doc.select("a.chapter-item")
 
-		return chapterItems.mapNotNull { a ->
+		return doc.select("a.chapter-item").mapNotNull { a ->
 			val href = a.attr("href").trim()
 			if (href.isBlank()) return@mapNotNull null
-			// href: /komiku/chapter/{slug}
 			val chapterSlug = href.trimEnd('/').substringAfterLast('/')
 			if (chapterSlug.isBlank()) return@mapNotNull null
 
 			val chapterUrl = "$basePath/chapter/$chapterSlug"
-			// text format: "{number} Chapter {number} {dd/MM/yyyy}"
 			val fullText = a.text().trim()
 
-			// Extract chapter title (e.g. "Chapter 133")
-			val titleMatch = Regex("""(Chapter\s+[\d.]+(?:\s+\S+)*)""", RegexOption.IGNORE_CASE).find(fullText)
-			val chapterTitle = titleMatch?.value?.trim() ?: chapterSlug
+			val chapterTitle = Regex("""(Chapter\s+[\d.]+)""", RegexOption.IGNORE_CASE)
+				.find(fullText)?.value?.trim() ?: chapterSlug
 
 			val number = Regex("""Chapter\s+([\d.]+)""", RegexOption.IGNORE_CASE)
 				.find(fullText)?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
