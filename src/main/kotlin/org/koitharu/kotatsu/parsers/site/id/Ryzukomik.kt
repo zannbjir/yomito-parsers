@@ -1,5 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.id
 
+import okhttp3.Interceptor
+import okhttp3.Response
 import org.jsoup.Jsoup
 import org.json.JSONArray
 import org.jsoup.nodes.Document
@@ -237,4 +239,14 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 		"sports" to "Sports", "thriller" to "Thriller", "tragedy" to "Tragedy",
 		"wuxia" to "Wuxia", "yuri" to "Yuri",
 	).map { (key, title) -> MangaTag(key = key, title = title, source = source) }.toSet()
+
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val response = chain.proceed(chain.request())
+        val protection = CloudFlareHelper.checkResponseForProtection(response)
+        if (protection != CloudFlareHelper.PROTECTION_NOT_DETECTED) {
+            response.close()
+            context.requestBrowserAction(this, chain.request().url.toString())
+        }
+        return response
+    }
 }
