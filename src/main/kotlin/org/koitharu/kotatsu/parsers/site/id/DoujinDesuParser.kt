@@ -9,29 +9,21 @@ import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
-import java.time.Instant
+import java.net.URLDecoder
+import java.text.SimpleDateFormat
 import java.util.*
 
-internal abstract class BaseDoujinDesuParser(
-	context: MangaLoaderContext,
-	source: MangaParserSource
-) : PagedMangaParser(context, source, pageSize = 18) {
-
-	protected abstract val defaultTypes: String
-
-	protected abstract val availableContentTypes: Set<ContentType>
+@MangaSourceParser("DOUJINDESU", "DoujinDesu.tv", "id", ContentType.HENTAI)
+internal class DoujinDesuParser(context: MangaLoaderContext) :
+	PagedMangaParser(context, MangaParserSource.DOUJINDESU, pageSize = 24) {
 
 	override val configKeyDomain: ConfigKey.Domain
-		get() = ConfigKey.Domain("doujindesu.tv", "doujindesu.xxx", "doujin.desu.xxx")
+		get() = ConfigKey.Domain("doujin.desu.xxx")
 
 	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
 		super.onCreateConfig(keys)
 		keys.add(userAgentKey)
-		keys.add(ConfigKey.InterceptCloudflare(defaultValue = true))
 	}
-
-	override val defaultSortOrder: SortOrder
-		get() = SortOrder.UPDATED
 
 	override val availableSortOrders: Set<SortOrder>
 		get() = EnumSet.of(SortOrder.UPDATED, SortOrder.NEWEST, SortOrder.ALPHABETICAL, SortOrder.POPULARITY)
@@ -47,311 +39,268 @@ internal abstract class BaseDoujinDesuParser(
 	override suspend fun getFilterOptions() = MangaListFilterOptions(
 		availableTags = fetchAvailableTags(),
 		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
-		availableContentTypes = availableContentTypes,
+		availableContentTypes = EnumSet.of(
+			ContentType.MANGA,
+			ContentType.MANHWA,
+			ContentType.DOUJINSHI,
+		),
 	)
 
 	override fun getRequestHeaders(): Headers = Headers.Builder()
-		.add("X-Requested-With", "XMLHttpRequest")
-		.add("Referer", "https://$domain/")
-		.add("X-App-Secret", "dfdf72051dbfdc7d76889ebd31324e74")
+		.add("X-App-Secret", APP_SECRET)
+		.add("x-app-secret", APP_SECRET)
 		.build()
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		val limit = pageSize
-		val offset = (page - 1) * limit
-
 		val url = urlBuilder().apply {
-			addPathSegment("api")
-			addPathSegment("manga")
-
-			addQueryParameter("limit", limit.toString())
-			addQueryParameter("offset", offset.toString())
-
-			filter.query?.let {
-				addQueryParameter("search", it)
+			addPathSegments("api/manga")
+			addQueryParameter("limit", pageSize.toString())
+			addQueryParameter("offset", ((page - 1) * pageSize).toString())
+			addQueryParameter(
+				"sort",
+				when (order) {
+					SortOrder.UPDATED -> "update"
+					SortOrder.POPULARITY -> "popular"
+					SortOrder.ALPHABETICAL -> "title"
+					SortOrder.NEWEST -> "newest"
+					else -> "newest"
+				},
+			)
+			filter.query?.let { addQueryParameter("search", it) }
+			filter.author?.let { addQueryParameter("author", it) }
+			if (filter.tags.isNotEmpty()) {
+				addQueryParameter("genre", filter.tags.joinToString(",") { it.key })
 			}
-
-			filter.author?.let {
-				addQueryParameter("author", it.replace(' ', '-').lowercase())
-			}
-
-			filter.tags.forEach {
-				addQueryParameter("genres[]", it.key)
-			}
-
-			val orderParam = when (order) {
-				SortOrder.POPULARITY -> "popular"
-				SortOrder.ALPHABETICAL -> "title"
-				SortOrder.NEWEST -> "latest"
-				SortOrder.UPDATED -> "update"
-				else -> "latest"
-			}
-			addQueryParameter("order", orderParam)
-
-			val typeParam = filter.types.oneOrThrowIfMany()?.let {
-				when (it) {
-					ContentType.MANGA -> "manga"
-					ContentType.MANHWA -> "manhwa"
-					ContentType.DOUJINSHI -> "doujinshi"
-					else -> ""
-				}
-			} ?: defaultTypes
-
-			if (typeParam.isNotEmpty()) {
-				addQueryParameter("type", typeParam)
-			}
-
 			filter.states.oneOrThrowIfMany()?.let {
-				val stateParam = when (it) {
-					MangaState.ONGOING -> "ongoing"
-					MangaState.FINISHED -> "completed"
-					else -> ""
-				}
-				if (stateParam.isNotEmpty()) {
-					addQueryParameter("status", stateParam)
-				}
+				addQueryParameter(
+					"status",
+					when (it) {
+						MangaState.ONGOING -> "ongoing"
+						MangaState.FINISHED -> "finished"
+						else -> ""
+					},
+				)
+			}
+			filter.types.oneOrThrowIfMany()?.let {
+				addQueryParameter(
+					"type",
+					when (it) {
+						ContentType.MANGA -> "manga"
+						ContentType.MANHWA -> "manhwa"
+						ContentType.DOUJINSHI -> "doujinshi"
+						else -> ""
+					},
+				)
 			}
 		}.build()
 
-		val jsonResponse = webClient.httpGet(url, extraHeaders = getRequestHeaders()).parseJson()
-		val encHex = jsonResponse.getString("_enc_resp_")
-		val decrypted = decrypt(encHex)
-
-		val array = JSONArray(decrypted)
-
-		val list = mutableListOf<Manga>()
-		for (i in 0 until array.length()) {
+		val array = apiGetArray(url)
+		return List(array.length()) { i ->
 			val obj = array.getJSONObject(i)
 			val slug = obj.getString("slug")
-			val href = "/manga/$slug"
-			list.add(
-				Manga(
-					id = generateUid(href),
-					title = obj.getString("title"),
-					altTitles = emptySet(),
-					url = href,
-					publicUrl = href.toAbsoluteUrl(domain),
-					rating = obj.optDouble("rating", 0.0).toFloat() / 10f,
-					contentRating = ContentRating.ADULT,
-					coverUrl = obj.optString("cover_url").takeIf { it.isNotEmpty() }?.toAbsoluteUrl(domain)?.let { cover ->
-						if (cover.contains("doujin")) {
-							cover.replace(Regex("https?://[^/]+"), "https://$domain")
-						} else {
-							cover
-						}
-					},
-					tags = emptySet(),
-					state = null,
-					authors = emptySet(),
-					largeCoverUrl = null,
-					description = null,
-					source = source,
-				)
+			Manga(
+				id = generateUid(slug),
+				title = obj.getString("title"),
+				altTitles = parseAltTitles(obj.optString("alt_titles", "")),
+				url = slug,
+				publicUrl = "https://$domain/manga/$slug/",
+				rating = parseRating(obj.optDouble("rating", -1.0)),
+				contentRating = ContentRating.ADULT,
+				coverUrl = obj.optString("cover_url").takeIf { it.isNotEmpty() },
+				tags = emptySet(),
+				state = parseState(obj.optString("status", "")),
+				authors = setOfNotNull(obj.optString("author", null)?.takeIf { it.isNotEmpty() }),
+				largeCoverUrl = null,
+				description = null,
+				source = source,
 			)
 		}
-		return list
 	}
 
 	override suspend fun getDetails(manga: Manga): Manga {
-		val slug = manga.url.removePrefix("/manga/").removeSuffix("/")
-		val url = "/api/manga/$slug".toAbsoluteUrl(domain)
+		val url = urlBuilder().addPathSegments("api/manga/${manga.url}").build()
+		val obj = apiGet(url)
 
-		val jsonResponse = webClient.httpGet(url, extraHeaders = getRequestHeaders()).parseJson()
-		val encHex = jsonResponse.getString("_enc_resp_")
-		val decrypted = decrypt(encHex)
-		val obj = JSONObject(decrypted)
+		val mangaGenres = obj.optJSONArray("manga_genres") ?: JSONArray()
+		val chaptersArray = obj.optJSONArray("chapters") ?: JSONArray()
 
-		val state = when (obj.optString("status")) {
-			"completed" -> MangaState.FINISHED
-			"ongoing" -> MangaState.ONGOING
-			else -> null
-		}
-
-		val author = obj.optString("author").takeIf { it.isNotEmpty() && it != "null" }
-
-		val tags = mutableSetOf<MangaTag>()
-		val genresArray = obj.optJSONArray("manga_genres")
-		if (genresArray != null) {
-			for (i in 0 until genresArray.length()) {
-				val genreObj = genresArray.getJSONObject(i).getJSONObject("genres")
-				tags.add(
+		val tags = buildSet<MangaTag> {
+			for (i in 0 until mangaGenres.length()) {
+				val mg = mangaGenres.getJSONObject(i)
+				val genre = mg.optJSONObject("genres") ?: continue
+				add(
 					MangaTag(
-						key = genreObj.getString("slug"),
-						title = genreObj.getString("name"),
-						source = source
-					)
+						key = genre.getString("slug"),
+						title = genre.getString("name"),
+						source = source,
+					),
 				)
 			}
 		}
 
-		val chaptersArray = obj.getJSONArray("chapters")
-		val chapters = mutableListOf<MangaChapter>()
+		val chapters = ArrayList<MangaChapter>(chaptersArray.length())
 		for (i in 0 until chaptersArray.length()) {
-			val chapObj = chaptersArray.getJSONObject(i)
-			val chId = chapObj.getString("id")
-			val chNum = chapObj.optDouble("chapter_number", 0.0).toFloat()
-			val chTitle = chapObj.optString("title").takeIf { it.isNotEmpty() } ?: "Chapter $chNum"
-			val chUrl = "/reader/$chId"
-			val createdAt = chapObj.optString("created_at")
-			val uploadDate = runCatching { Instant.parse(createdAt).toEpochMilli() }.getOrDefault(0L)
-
+			val ch = chaptersArray.getJSONObject(i)
+			val chId = ch.getString("id")
 			chapters.add(
 				MangaChapter(
-					id = generateUid(chUrl),
-					title = chTitle,
-					number = chNum,
+					id = generateUid(chId),
+					title = ch.optString("title").takeIf { it.isNotEmpty() }
+						?: "Chapter ${ch.getDouble("chapter_number")}",
+					number = ch.getDouble("chapter_number").toFloat(),
 					volume = 0,
-					url = chUrl,
+					url = chId,
 					scanlator = null,
-					uploadDate = uploadDate,
+					uploadDate = parseIsoDate(ch.optString("created_at", "")),
 					branch = null,
-					source = source
-				)
+					source = source,
+				),
 			)
 		}
-
-		val rawDesc = obj.optString("description").takeIf { it.isNotEmpty() && it != "null" }
-		val cleanDesc = rawDesc?.let { html ->
-			org.jsoup.Jsoup.parseBodyFragment(html).text()
-				.replace(Regex("^Sinopsis:\\s*", RegexOption.IGNORE_CASE), "")
-				.trim()
-		}
-
-		val coverUrl = obj.optString("cover_url").takeIf { it.isNotEmpty() }?.toAbsoluteUrl(domain)?.let { cover ->
-			if (cover.contains("doujin")) {
-				cover.replace(Regex("https?://[^/]+"), "https://$domain")
-			} else {
-				cover
-			}
-		}
+		chapters.sortBy { it.number }
 
 		return manga.copy(
-			authors = setOfNotNull(author),
-			description = cleanDesc,
-			state = state,
-			rating = obj.optDouble("rating", 0.0).toFloat() / 10f,
+			altTitles = parseAltTitles(obj.optString("alt_titles", "")),
+			description = obj.optString("description").takeIf { it.isNotEmpty() },
+			state = parseState(obj.optString("status", "")),
+			authors = setOfNotNull(
+				obj.optString("author", null)?.takeIf { it.isNotEmpty() },
+				obj.optString("artist", null)?.takeIf { it.isNotEmpty() },
+			),
+			rating = parseRating(obj.optDouble("rating", -1.0)),
 			tags = tags,
-			coverUrl = coverUrl ?: manga.coverUrl,
-			chapters = chapters.reversed()
+			chapters = chapters,
 		)
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val chId = chapter.url.removePrefix("/reader/").removeSuffix("/")
-		val url = "/api/chapters/$chId".toAbsoluteUrl(domain)
-
-		val jsonResponse = webClient.httpGet(url, extraHeaders = getRequestHeaders()).parseJson()
-		val encHex = jsonResponse.getString("_enc_resp_")
-		val decrypted = decrypt(encHex)
-		val obj = JSONObject(decrypted)
-
-		val pagesList = mutableListOf<MangaPage>()
-		val contentUrls = obj.optJSONArray("content_urls")
-		if (contentUrls != null && contentUrls.length() > 0) {
-			for (i in 0 until contentUrls.length()) {
-				val pageUrl = contentUrls.getString(i)
-				pagesList.add(
-					MangaPage(
-						id = generateUid(pageUrl),
-						url = pageUrl,
-						preview = null,
-						source = source
-					)
-				)
-			}
-		} else {
-			val signedUrlsStr = obj.optString("signed_content_urls")
-			if (signedUrlsStr.isNotEmpty()) {
-				val signedUrls = JSONArray(signedUrlsStr)
-				for (i in 0 until signedUrls.length()) {
-					val pageUrl = signedUrls.getString(i)
-					pagesList.add(
-						MangaPage(
-							id = generateUid(pageUrl),
-							url = pageUrl,
-							preview = null,
-							source = source
-						)
-					)
-				}
-			}
+		val url = urlBuilder().addPathSegments("api/chapters/${chapter.url}").build()
+		val obj = apiGet(url)
+		val contentUrls = obj.optJSONArray("content_urls") ?: JSONArray()
+		return List(contentUrls.length()) { i ->
+			val imgUrl = contentUrls.getString(i)
+			MangaPage(
+				id = generateUid(imgUrl),
+				url = imgUrl,
+				preview = null,
+				source = source,
+			)
 		}
-
-		return pagesList
 	}
 
 	private suspend fun fetchAvailableTags(): Set<MangaTag> {
-		val url = "/api/terms?taxonomy=genre".toAbsoluteUrl(domain)
-		val jsonResponse = webClient.httpGet(url, extraHeaders = getRequestHeaders()).parseJson()
-		val encHex = jsonResponse.getString("_enc_resp_")
-		val decrypted = decrypt(encHex)
-		val array = JSONArray(decrypted)
-		val tags = mutableSetOf<MangaTag>()
-		for (i in 0 until array.length()) {
-			val obj = array.getJSONObject(i)
-			val name = obj.getString("name")
-			val slug = obj.getString("slug")
-			tags.add(MangaTag(key = slug, title = name, source = source))
-		}
-		return tags
-	}
-
-	private fun generateKey(step: Long): String {
-		val input = "doujindesu-scrapers-cannot-read-this-super-secret-salt-2026-v2_$step"
-		var n = 0
-		for (i in 0 until input.length) {
-			n = (n shl 5) - n + input[i].code
-		}
-		var seed = if (n == 0) 123456789L else kotlin.math.abs(n.toLong())
-		val keyBuilder = StringBuilder()
-		for (i in 0 until 32) {
-			seed = (seed * 1664525L + 1013904223L) and 0xFFFFFFFFL
-			val charCode = 33 + (seed % 93).toInt()
-			keyBuilder.append(charCode.toChar())
-		}
-		return keyBuilder.toString()
-	}
-
-	private fun decrypt(encHex: String): String {
-		val timeStep = 3600000L
-		val now = System.currentTimeMillis()
-		val currentStep = now / timeStep
-
-		var lastError: Exception? = null
-		for (offset in intArrayOf(0, -1, 1)) {
-			val step = currentStep + offset
-			val key = generateKey(step)
-			try {
-				val encBytes = ByteArray(encHex.length / 2) { i ->
-					encHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
-				}
-				val decBytes = ByteArray(encBytes.size)
-				var c = 42
-				for (i in encBytes.indices) {
-					val p = encBytes[i].toInt() and 0xFF
-					val f = key[i % key.length].code
-					val k = p xor f xor (i * 13) xor c
-					decBytes[i] = (k and 0xFF).toByte()
-					c = (c + p) % 256
-				}
-				val decoded = String(decBytes, Charsets.UTF_8)
-				return java.net.URLDecoder.decode(decoded, "UTF-8")
-			} catch (e: Exception) {
-				lastError = e
+		val url = urlBuilder().addPathSegments("api/genres").build()
+		val array = apiGetArray(url)
+		return buildSet {
+			for (i in 0 until array.length()) {
+				val obj = array.getJSONObject(i)
+				add(
+					MangaTag(
+						key = obj.getString("slug"),
+						title = obj.getString("name"),
+						source = source,
+					),
+				)
 			}
 		}
-		throw lastError ?: RuntimeException("Decryption failed")
 	}
-}
 
-@MangaSourceParser("DOUJINDESU", "DoujinDesu", "id")
-internal class DoujinDesuParser(context: MangaLoaderContext) :
-	BaseDoujinDesuParser(context, MangaParserSource.DOUJINDESU) {
+	// --- Decryption helpers ---
 
-	override val defaultTypes: String = "doujinshi,manga"
+	private fun generateKey(epochSlot: Long): String {
+		val s = "${ENC_SALT}_$epochSlot"
+		var n = 0
+		for (c in s) {
+			n = (n shl 5) - n + c.code
+		}
+		var l = if (n == 0) 123456789L else Math.abs(n.toLong())
+		val sb = StringBuilder(32)
+		repeat(32) {
+			l = (l * 1664525L + 1013904223L) % 4294967296L
+			sb.append((33 + (l % 93).toInt()).toChar())
+		}
+		return sb.toString()
+	}
 
-	override val availableContentTypes: Set<ContentType> = EnumSet.of(
-		ContentType.MANGA,
-		ContentType.DOUJINSHI,
-	)
+	private fun decryptXor(hexStr: String, key: String): String {
+		val bytes = ArrayList<Int>(hexStr.length / 2)
+		var u = 0
+		while (u < hexStr.length) {
+			val part = hexStr.substring(u, minOf(u + 2, hexStr.length))
+			if (part.isEmpty()) break
+			bytes.add(part.toInt(16))
+			u += 2
+		}
+		val keyLen = key.length
+		var c = 42
+		val sb = StringBuilder(bytes.size)
+		for (i in bytes.indices) {
+			val p = bytes[i]
+			val f = key[i % keyLen].code
+			val k = p xor f xor (i * 13) xor c
+			sb.append((k and 255).toChar())
+			c = (c + p) % 256
+		}
+		return sb.toString()
+	}
+
+	private fun decryptResponse(encStr: String): String {
+		val t = System.currentTimeMillis() / ENC_INTERVAL
+		val keys = listOf(generateKey(t), generateKey(t - 1), generateKey(t + 1))
+		for (key in keys) {
+			try {
+				val raw = decryptXor(encStr, key)
+				return URLDecoder.decode(raw, "UTF-8")
+			} catch (_: Exception) {
+			}
+		}
+		throw Exception("Failed to decrypt DoujinDesu API response")
+	}
+
+	private suspend fun apiGet(url: okhttp3.HttpUrl): JSONObject {
+		val wrapper = webClient.httpGet(url).parseJson()
+		val enc = wrapper.optString("_enc_resp_", null) ?: return wrapper
+		return JSONObject(decryptResponse(enc))
+	}
+
+	private suspend fun apiGetArray(url: okhttp3.HttpUrl): JSONArray {
+		val wrapper = webClient.httpGet(url).parseJson()
+		val enc = wrapper.optString("_enc_resp_", null) ?: return JSONArray()
+		return JSONArray(decryptResponse(enc))
+	}
+
+	// --- Misc helpers ---
+
+	private fun parseAltTitles(raw: String): Set<String> {
+		if (raw.isBlank()) return emptySet()
+		return raw.split("|").mapNotNull { it.trim().takeIf { s -> s.isNotEmpty() } }.toSet()
+	}
+
+	private fun parseState(status: String): MangaState? = when (status) {
+		"ongoing" -> MangaState.ONGOING
+		"finished" -> MangaState.FINISHED
+		else -> null
+	}
+
+	private fun parseRating(raw: Double): Float {
+		if (raw <= 0.0) return RATING_UNKNOWN
+		return (raw / 10f).toFloat().coerceIn(0f, 1f)
+	}
+
+	private fun parseIsoDate(iso: String): Long {
+		if (iso.isEmpty()) return 0L
+		return try {
+			val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+			sdf.timeZone = TimeZone.getTimeZone("UTC")
+			sdf.parse(iso)?.time ?: 0L
+		} catch (_: Exception) {
+			0L
+		}
+	}
+
+	companion object {
+		private const val APP_SECRET = "dfdf72051dbfdc7d76889ebd31324e74"
+		private const val ENC_SALT = "doujindesu-scrapers-cannot-read-this-super-secret-salt-2026-v2"
+		private const val ENC_INTERVAL = 3600000L
+	}
 }
