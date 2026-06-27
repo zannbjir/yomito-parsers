@@ -1,6 +1,8 @@
 package org.koitharu.kotatsu.parsers.site.madara.id
 
 import okhttp3.Headers
+import okhttp3.Interceptor
+import okhttp3.Response
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.model.MangaParserSource
@@ -12,7 +14,7 @@ import kotlin.random.Random
 
 @MangaSourceParser("MGKOMIK", "MgKomik", "id")
 internal class Mgkomik(context: MangaLoaderContext) :
-	MadaraParser(context, MangaParserSource.MGKOMIK, "web.mgkomik.cc", 20) {
+	MadaraParser(context, MangaParserSource.MGKOMIK, "id.mgkomik.cc", 20) {
 
 	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
 		super.onCreateConfig(keys)
@@ -36,6 +38,16 @@ internal class Mgkomik(context: MangaLoaderContext) :
 		.add(CommonHeaders.UPGRADE_INSECURE_REQUESTS, "1")
 		.add(CommonHeaders.X_REQUESTED_WITH, randomString)
 		.build()
+
+     override fun intercept(chain: Interceptor.Chain): Response {
+        val response = chain.proceed(chain.request())
+        val protection = CloudFlareHelper.checkResponseForProtection(response)
+        if (protection != CloudFlareHelper.PROTECTION_NOT_DETECTED) {
+            response.close()
+            context.requestBrowserAction(this, chain.request().url.toString())
+        }
+        return response
+     }
 
 	private fun generateRandomString(length: Int): String {
 		val charset = "HALOGaES.BCDFHIJKMNPQRTUVWXYZ.bcdefghijklmnopqrstuvwxyz0123456789"
