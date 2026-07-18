@@ -7,12 +7,10 @@ import org.koitharu.kotatsu.parsers.exception.AuthRequiredException
 import org.koitharu.kotatsu.parsers.model.ContentType
 import org.koitharu.kotatsu.parsers.model.MangaParserSource
 import org.koitharu.kotatsu.parsers.site.comicaso.ComicasoParser
-import org.koitharu.kotatsu.parsers.util.json.parseJson
 
 @MangaSourceParser("MEDUSASCANS", "Medusascans", "id", ContentType.HENTAI)
 internal class Medusascans(context: MangaLoaderContext) :
-	ComicasoParser(context, MangaParserSource.MEDUSASCANS, "v3.comicaso.pro", pageSize = 20),
-	MangaParserAuthProvider {
+	ComicasoParser(context, MangaParserSource.MEDUSASCANS, "v3.comicaso.pro", pageSize = 20) {
 
 	override val apiSource: String = "medusa"
 
