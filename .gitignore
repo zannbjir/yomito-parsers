@@ -86,6 +86,8 @@ src/test/resources/cookies.txt
 local.properties
 .kotlin/
 !/.idea/kotlin-statistics.xml
+hs_err_pid*.log
+replay_pid*.log
 
 .idea/**/discord.xml
 .idea/**/migrations.xml

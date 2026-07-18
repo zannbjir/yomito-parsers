@@ -1,18 +1,17 @@
 package org.koitharu.kotatsu.parsers.site.comicaso
 
-import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Headers
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.HttpStatusException
 import org.jsoup.Jsoup
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.exception.AuthRequiredException
-import org.koitharu.kotatsu.parsers.exception.ParseException
 import org.koitharu.kotatsu.parsers.model.*
+import org.koitharu.kotatsu.parsers.network.UserAgents
 import org.koitharu.kotatsu.parsers.util.*
 import org.koitharu.kotatsu.parsers.util.json.*
 import java.util.*
@@ -26,9 +25,19 @@ internal abstract class ComicasoParser(
 
 	override val configKeyDomain = ConfigKey.Domain(domain)
 
+	override val userAgentKey = ConfigKey.UserAgent(UserAgents.CHROME_MOBILE)
+
 	override val sourceLocale: Locale = Locale("id")
 
 	protected abstract val apiSource: String
+
+	/**
+	 * Sources like Medusascans return `locked: true` for the manga detail /
+	 * chapter endpoints when the user is a guest. Subclasses override this to
+	 * make [AuthRequiredException] fire instead of a generic error, which lets
+	 * the host app open the in-app login WebView.
+	 */
+	protected open val loginRequired: Boolean = false
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.UPDATED,
@@ -43,6 +52,18 @@ internal abstract class ComicasoParser(
 			isSearchWithFiltersSupported = true,
 		)
 
+	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
+		super.onCreateConfig(keys)
+		keys.add(userAgentKey)
+	}
+
+	override fun getRequestHeaders(): Headers = Headers.Builder()
+		.add("User-Agent", config[userAgentKey])
+		.add("Accept", "application/json, text/plain, */*")
+		.add("Referer", "https://$domain/")
+		.add("X-Requested-With", "XMLHttpRequest")
+		.build()
+
 	override suspend fun getFilterOptions() = MangaListFilterOptions(
 		availableTags = fetchAvailableTags(),
 		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
@@ -55,7 +76,7 @@ internal abstract class ComicasoParser(
 
 	private suspend fun fetchAvailableTags(): Set<MangaTag> {
 		val url = "https://$domain/api/genres.php?source=$apiSource"
-		val json = webClient.httpGet(url).parseJson()
+		val json = apiGetJson(url)
 		val arr = json.optJSONObject("data")?.optJSONArray(apiSource) ?: return emptySet()
 		val result = LinkedHashSet<MangaTag>(arr.length())
 		for (i in 0 until arr.length()) {
@@ -104,7 +125,7 @@ internal abstract class ComicasoParser(
 			append("&offset=").append(offset)
 		}
 
-		val json = webClient.httpGet(url).parseJson()
+		val json = apiGetJson(url)
 		val data = json.optJSONArray("data") ?: return emptyList()
 
 		val stateFilter = filter.states.oneOrThrowIfMany()
@@ -150,7 +171,9 @@ internal abstract class ComicasoParser(
 
 	override suspend fun getDetails(manga: Manga): Manga {
 		val slug = manga.url.removePrefix("/komik/").removeSuffix("/")
-		val json = fetchMangaJson(slug)
+		val url = "https://$domain/api/manga.php?source=$apiSource&slug=${slug.urlEncoded()}&platform=web"
+		val json = apiGetJson(url)
+
 		val data = json.getJSONObject("data")
 
 		val title = data.getString("title")
@@ -164,7 +187,7 @@ internal abstract class ComicasoParser(
 			if (synopsis != null) append(synopsis)
 			if (alternative != null) {
 				if (isNotEmpty()) append("\n\n")
-				append("Alternative: $alternative")
+				append("Alternative: ").append(alternative)
 			}
 		}.trim().takeIf { it.isNotEmpty() }
 
@@ -238,8 +261,12 @@ internal abstract class ComicasoParser(
 		val mangaSlug = parts[1]
 		val chapterSlug = parts[2]
 
-		// Re-fetch manga detail to get a fresh, IP-bound chapter token.
-		val detailJson = fetchMangaJson(mangaSlug)
+		// Re-fetch manga detail to get a fresh, IP-bound chapter token
+		val detailUrl = "https://$domain/api/manga.php" +
+			"?source=${apiSource.urlEncoded()}" +
+			"&slug=${mangaSlug.urlEncoded()}" +
+			"&platform=web"
+		val detailJson = apiGetJson(detailUrl)
 
 		var chapterToken = ""
 		val chaptersArray = detailJson.optJSONObject("data")?.optJSONArray("chapters")
@@ -253,7 +280,19 @@ internal abstract class ComicasoParser(
 			}
 		}
 
-		val json = fetchChapterJson(mangaSlug, chapterSlug, chapterToken)
+		val url = buildString {
+			append("https://$domain/api/chapter.php")
+			append("?source=").append(apiSource.urlEncoded())
+			append("&manga=").append(mangaSlug.urlEncoded())
+			append("&chapter=").append(chapterSlug.urlEncoded())
+			append("&platform=web")
+			if (chapterToken.isNotBlank()) {
+				append("&token=").append(chapterToken.urlEncoded())
+			}
+		}
+
+		val json = apiGetJson(url)
+
 		val data = json.getJSONObject("data")
 		val images = data.optJSONArray("images") ?: return emptyList()
 
@@ -268,198 +307,133 @@ internal abstract class ComicasoParser(
 		}
 	}
 
-	// --- API helpers -----------------------------------------------------
-	//
-	// The Comicaso API returns non-2xx status codes for its "expected" error
-	// responses (428 for `need_challenge`, 403 for `locked`, 400 for a failed
-	// challenge submission), each with a JSON body describing what happened.
-	// The default WebClient throws HttpStatusException on any 4xx, so we
-	// bypass it here and use OkHttp directly, then parse the body ourselves.
-
-	/**
-	 * Fetches /api/manga.php, transparently solving the human-challenge if the
-	 * server requests one and mapping "locked" responses to AuthRequiredException.
-	 */
-	private suspend fun fetchMangaJson(slug: String): JSONObject {
-		val url = "https://$domain/api/manga.php" +
-			"?source=${apiSource.urlEncoded()}" +
-			"&slug=${slug.urlEncoded()}" +
-			"&platform=web"
-
-		val json = fetchJsonAllowingApiErrors(url).let { first ->
-			ensureUnlocked(first, url) { fetchJsonAllowingApiErrors(url) }
-		}
-
-		if (json.optJSONObject("data") == null) {
-			throw ParseException("Comicaso: data manga tidak ditemukan", url)
-		}
-		return json
-	}
-
-	private suspend fun fetchChapterJson(
-		mangaSlug: String,
-		chapterSlug: String,
-		token: String,
-	): JSONObject {
-		val url = buildString {
-			append("https://$domain/api/chapter.php")
-			append("?source=").append(apiSource.urlEncoded())
-			append("&manga=").append(mangaSlug.urlEncoded())
-			append("&chapter=").append(chapterSlug.urlEncoded())
-			append("&platform=web")
-			if (token.isNotBlank()) {
-				append("&token=").append(token.urlEncoded())
-			}
-		}
-
-		return fetchJsonAllowingApiErrors(url).let { first ->
-			ensureUnlocked(first, url) { fetchJsonAllowingApiErrors(url) }
-		}
-	}
-
-	/**
-	 * Inspects a Comicaso API response for `need_challenge` / `locked` flags.
-	 *  - If the account is locked (Medusa requires login), throws
-	 *    [AuthRequiredException] so the app shows a proper "login required"
-	 *    prompt instead of a generic "page not found" error.
-	 *  - If a human-challenge is required, solves it once and retries via
-	 *    the [retry] block, returning that response.
-	 */
-	private suspend fun ensureUnlocked(
-		json: JSONObject,
-		url: String,
-		retry: suspend () -> JSONObject,
-	): JSONObject {
-		if (json.optBoolean("ok", true)) return json
-
-		if (json.optBoolean("locked", false)) {
-			throw AuthRequiredException(source)
-		}
-
-		if (json.optBoolean("need_challenge", false)) {
-			solveChallenge()
-			val retried = retry()
-			if (!retried.optBoolean("ok", true)) {
-				if (retried.optBoolean("locked", false)) {
-					throw AuthRequiredException(source)
-				}
-				val message = retried.optString("message")
-					.ifBlank { "Comicaso: gagal memuat konten setelah verifikasi." }
-				throw ParseException(message, url)
-			}
-			return retried
-		}
-
-		val message = json.optString("message")
-			.ifBlank { "Comicaso: gagal memuat konten." }
-		throw ParseException(message, url)
-	}
-
-	/**
-	 * Solves the Comicaso human-challenge:
-	 *   1. GET /api/challenge.php -> receives { challenge: { id, ticket } }.
-	 *   2. POST /api/challenge.php with a synthetic slider trace that satisfies
-	 *      the server's minimum requirements (elapsed >= 650ms, progress >= 0.97,
-	 *      samples throttled to >= 45ms apart, at most 80 samples).
-	 * The verification cookie is persisted by the shared OkHttp CookieJar,
-	 * so subsequent /api/manga.php and /api/chapter.php calls succeed.
-	 */
-	private suspend fun solveChallenge() {
-		val challengeUrl = "https://$domain/api/challenge.php"
-		val getJson = fetchJsonAllowingApiErrors(challengeUrl)
-		if (!getJson.optBoolean("ok", false)) {
-			throw ParseException(
-				getJson.optString("message")
-					.ifBlank { "Comicaso: verifikasi tidak dapat dimulai." },
-				challengeUrl,
-			)
-		}
-		if (getJson.optBoolean("verified", false)) return
-
-		val challenge = getJson.optJSONObject("challenge") ?: throw ParseException(
-			"Comicaso: verifikasi tidak dapat dimulai (challenge kosong).",
-			challengeUrl,
-		)
-		val challengeId = challenge.optString("id")
-		val ticket = challenge.optString("ticket")
-		if (challengeId.isBlank() || ticket.isBlank()) {
-			throw ParseException(
-				"Comicaso: verifikasi tidak dapat dimulai (ticket kosong).",
-				challengeUrl,
-			)
-		}
-
-		val samples = JSONArray()
-		val total = 24
-		val totalMs = 1500L
-		for (i in 0 until total) {
-			val fraction = i.toDouble() / (total - 1)
-			// Match the JS reference: Number(x.toFixed(4)) and Math.round(elapsed).
-			val x = Math.round(fraction * 10_000.0) / 10_000.0
-			val t = Math.round(fraction * totalMs)
-			samples.put(JSONObject().apply {
-				put("x", x)
-				put("t", t)
-			})
-		}
-
-		val body = JSONObject().apply {
-			put("challenge_id", challengeId)
-			put("ticket", ticket)
-			put("elapsed_ms", totalMs)
-			put("progress", 1)
-			put("samples", samples)
-		}
-
-		val postJson = postJsonAllowingApiErrors(challengeUrl, body)
-		if (!postJson.optBoolean("ok", false) || !postJson.optBoolean("verified", false)) {
-			throw ParseException(
-				postJson.optString("message").ifBlank { "Comicaso: verifikasi gagal." },
-				challengeUrl,
-			)
-		}
-	}
-
-	/**
-	 * Performs a GET and parses the JSON body without rejecting 4xx responses,
-	 * because Comicaso encodes challenge / lock signals as HTTP errors with a
-	 * JSON payload. Only actual network / non-JSON failures propagate.
-	 */
-	private suspend fun fetchJsonAllowingApiErrors(url: String): JSONObject {
-		val request = Request.Builder()
-			.get()
-			.url(url)
-			.tag(MangaSource::class.java, source)
-			.build()
-		return context.httpClient.newCall(request).await().parseJsonAndClose()
-	}
-
-	private suspend fun postJsonAllowingApiErrors(url: String, body: JSONObject): JSONObject {
-		val requestBody = body.toString()
-			.toRequestBody("application/json; charset=utf-8".toMediaType())
-		val request = Request.Builder()
-			.post(requestBody)
-			.url(url)
-			.tag(MangaSource::class.java, source)
-			.build()
-		return context.httpClient.newCall(request).await().parseJsonAndClose()
-	}
-
-	private fun Response.parseJsonAndClose(): JSONObject = use { r ->
-		val text = r.body.string()
-		try {
-			JSONObject(text)
-		} catch (e: Exception) {
-			throw ParseException(
-				"Comicaso: respons tidak dapat diparsing (status ${r.code}).",
-				r.request.url.toString(),
-				e,
-			)
-		}
-	}
-
 	private fun extractChapterNumber(title: String): Float {
-		return Regex("""[\d]+(?:[.,]\d+)?""").find(title)
+		return Regex("""\d+(?:[.,]\d+)?""").find(title)
 			?.value?.replace(',', '.')?.toFloatOrNull() ?: 0f
+	}
+
+	// ----------------------------------------------------------------------
+	// Comicaso access-gate handling
+	// ----------------------------------------------------------------------
+
+	/**
+	 * `webClient.httpGet(...).parseJson()` with automatic handling of:
+	 *  - status 428 / `need_challenge: true`: solve the human slider challenge
+	 *    once, then retry.
+	 *  - status 403 / `locked: true` (Medusascans): map to [AuthRequiredException]
+	 *    so the host app can open the login WebView.
+	 */
+	private suspend fun apiGetJson(url: String): JSONObject {
+		var solvedChallenge = false
+		repeat(2) {
+			val json = try {
+				webClient.httpGet(url).parseJson()
+			} catch (e: HttpStatusException) {
+				// ensureSuccess() consumed the body; re-fetch raw to inspect it
+				val raw = rawFetchJson(url) ?: throw e
+				handleAccessGate(raw, solvedChallenge)?.let {
+					solvedChallenge = solvedChallenge || it
+					return@repeat
+				}
+				throw e
+			}
+			handleAccessGate(json, solvedChallenge)?.let {
+				solvedChallenge = solvedChallenge || it
+				return@repeat
+			}
+			return json
+		}
+		throw IllegalStateException("Gagal memuat data dari $url")
+	}
+
+	/**
+	 * Bypasses [org.koitharu.kotatsu.parsers.network.OkHttpWebClient.ensureSuccess]
+	 * so we can read a JSON error body attached to a 4xx response.
+	 */
+	private suspend fun rawFetchJson(url: String): JSONObject? {
+		val request = Request.Builder()
+			.url(url)
+			.get()
+			.headers(getRequestHeaders())
+			.build()
+		val response = context.httpClient.newCall(request).await()
+		val body = response.use { it.body?.string() }
+		return if (!body.isNullOrBlank()) JSONObject(body) else null
+	}
+
+	/**
+	 * Inspects an API response. Returns:
+	 *  - `true`  → caller should retry (challenge was solved just now)
+	 *  - `null`  → no gate present, proceed with the current json
+	 *  - throws  → hard error (login required or another blocking failure)
+	 */
+	private suspend fun handleAccessGate(json: JSONObject, alreadySolved: Boolean): Boolean? {
+		if (json.optBoolean("need_challenge")) {
+			if (alreadySolved) {
+				throw Exception(json.optString("message", "Verifikasi tetap gagal"))
+			}
+			solveHumanChallenge()
+			return true
+		}
+		if (!json.optBoolean("ok", true) && json.optBoolean("locked", false)) {
+			if (loginRequired) {
+				throw AuthRequiredException(source)
+			}
+			throw Exception(json.optString("message", "Konten dikunci"))
+		}
+		return null
+	}
+
+	/**
+	 * Emulates a natural slider drag against `/api/challenge.php`.
+	 * On success the server sets the `comicaso_human` cookie in
+	 * [MangaLoaderContext.cookieJar], which future requests reuse
+	 * automatically. Retried up to 3 times because the server's fraud
+	 * detection is intentionally noisy.
+	 */
+	private suspend fun solveHumanChallenge() {
+		var lastMessage: String? = null
+		repeat(3) {
+			val issue = webClient.httpGet("https://$domain/api/challenge.php").parseJson()
+			if (issue.optBoolean("verified")) return
+			val ch = issue.optJSONObject("challenge") ?: return@repeat
+			val id = ch.optString("id").ifBlank { return@repeat }
+			val ticket = ch.optString("ticket").ifBlank { return@repeat }
+
+			// The site JS requires: elapsed_ms >= 650, progress >= 0.97,
+			// samples ≤ 79, monotonic t, x∈[0..1]. Emulate 31 samples over 1500 ms.
+			val samples = JSONArray()
+			val steps = 30
+			val durationMs = 1500
+			for (i in 0..steps) {
+				val frac = i.toDouble() / steps
+				val jitter = (Math.random() - 0.5) * 0.005
+				val x = if (i == steps) 1.0 else (frac + jitter).coerceIn(0.0, 1.0)
+				val t = if (i == steps) durationMs else (frac * durationMs).toInt()
+				samples.put(
+					JSONObject().apply {
+						put("x", (Math.round(x * 10000.0) / 10000.0))
+						put("t", t)
+					},
+				)
+			}
+
+			val body = JSONObject().apply {
+				put("challenge_id", id)
+				put("ticket", ticket)
+				put("elapsed_ms", durationMs)
+				put("progress", 1)
+				put("samples", samples)
+			}
+			val resp = try {
+				webClient.httpPost("https://$domain/api/challenge.php", body).parseJson()
+			} catch (e: Exception) {
+				lastMessage = e.message
+				return@repeat
+			}
+			if (resp.optBoolean("verified")) return
+			lastMessage = resp.optString("message")
+		}
+		throw Exception(lastMessage ?: "Verifikasi manusia gagal")
 	}
 }
