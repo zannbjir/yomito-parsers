@@ -31,12 +31,6 @@ internal abstract class ComicasoParser(
 
 	protected abstract val apiSource: String
 
-	/**
-	 * Sources like Medusascans return `locked: true` for the manga detail /
-	 * chapter endpoints when the user is a guest. Subclasses override this to
-	 * make [AuthRequiredException] fire instead of a generic error, which lets
-	 * the host app open the in-app login WebView.
-	 */
 	protected open val loginRequired: Boolean = false
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
@@ -77,7 +71,10 @@ internal abstract class ComicasoParser(
 	private suspend fun fetchAvailableTags(): Set<MangaTag> {
 		val url = "https://$domain/api/genres.php?source=$apiSource"
 		val json = apiGetJson(url)
-		val arr = json.optJSONObject("data")?.optJSONArray(apiSource) ?: return emptySet()
+		val arr = json.optJSONObject("data")?.optJSONArray(apiSource)
+			?: json.optJSONArray("genres")
+			?: return emptySet()
+
 		val result = LinkedHashSet<MangaTag>(arr.length())
 		for (i in 0 until arr.length()) {
 			val item = arr.getJSONObject(i)
@@ -312,44 +309,49 @@ internal abstract class ComicasoParser(
 			?.value?.replace(',', '.')?.toFloatOrNull() ?: 0f
 	}
 
-	// ----------------------------------------------------------------------
-	// Comicaso access-gate handling
-	// ----------------------------------------------------------------------
 
-	/**
-	 * `webClient.httpGet(...).parseJson()` with automatic handling of:
-	 *  - status 428 / `need_challenge: true`: solve the human slider challenge
-	 *    once, then retry.
-	 *  - status 403 / `locked: true` (Medusascans): map to [AuthRequiredException]
-	 *    so the host app can open the login WebView.
-	 */
+	private enum class GateAction {
+		RETRY_CHALLENGE,
+		RETRY_LOGIN,
+	}
+
 	private suspend fun apiGetJson(url: String): JSONObject {
 		var solvedChallenge = false
-		repeat(2) {
+		var triedLogin = false
+
+		repeat(3) {
 			val json = try {
 				webClient.httpGet(url).parseJson()
 			} catch (e: HttpStatusException) {
-				// ensureSuccess() consumed the body; re-fetch raw to inspect it
 				val raw = rawFetchJson(url) ?: throw e
-				handleAccessGate(raw, solvedChallenge)?.let {
-					solvedChallenge = solvedChallenge || it
+				when (handleAccessGate(raw, solvedChallenge, triedLogin)) {
+					GateAction.RETRY_CHALLENGE -> {
+						solvedChallenge = true
+						return@repeat
+					}
+					GateAction.RETRY_LOGIN -> {
+						triedLogin = true
+						return@repeat
+					}
+					null -> throw e
+				}
+			}
+
+			when (handleAccessGate(json, solvedChallenge, triedLogin)) {
+				GateAction.RETRY_CHALLENGE -> {
+					solvedChallenge = true
 					return@repeat
 				}
-				throw e
+				GateAction.RETRY_LOGIN -> {
+					triedLogin = true
+					return@repeat
+				}
+				null -> return json
 			}
-			handleAccessGate(json, solvedChallenge)?.let {
-				solvedChallenge = solvedChallenge || it
-				return@repeat
-			}
-			return json
 		}
 		throw IllegalStateException("Gagal memuat data dari $url")
 	}
 
-	/**
-	 * Bypasses [org.koitharu.kotatsu.parsers.network.OkHttpWebClient.ensureSuccess]
-	 * so we can read a JSON error body attached to a 4xx response.
-	 */
 	private suspend fun rawFetchJson(url: String): JSONObject? {
 		val request = Request.Builder()
 			.url(url)
@@ -361,36 +363,57 @@ internal abstract class ComicasoParser(
 		return if (!body.isNullOrBlank()) JSONObject(body) else null
 	}
 
-	/**
-	 * Inspects an API response. Returns:
-	 *  - `true`  → caller should retry (challenge was solved just now)
-	 *  - `null`  → no gate present, proceed with the current json
-	 *  - throws  → hard error (login required or another blocking failure)
-	 */
-	private suspend fun handleAccessGate(json: JSONObject, alreadySolved: Boolean): Boolean? {
+	private suspend fun handleAccessGate(
+		json: JSONObject,
+		alreadySolvedChallenge: Boolean,
+		alreadyTriedLogin: Boolean,
+	): GateAction? {
 		if (json.optBoolean("need_challenge")) {
-			if (alreadySolved) {
+			if (alreadySolvedChallenge) {
 				throw Exception(json.optString("message", "Verifikasi tetap gagal"))
 			}
 			solveHumanChallenge()
-			return true
+			return GateAction.RETRY_CHALLENGE
 		}
+
 		if (!json.optBoolean("ok", true) && json.optBoolean("locked", false)) {
+			if (!alreadyTriedLogin) {
+				try {
+					loginDummyAccount()
+					return GateAction.RETRY_LOGIN
+				} catch (e: Exception) {
+					if (loginRequired) {
+						throw AuthRequiredException(source)
+					}
+					throw e
+				}
+			}
 			if (loginRequired) {
 				throw AuthRequiredException(source)
 			}
 			throw Exception(json.optString("message", "Konten dikunci"))
 		}
+
 		return null
 	}
 
-	/**
-	 * Emulates a natural slider drag against `/api/challenge.php`.
-	 * On success the server sets the `comicaso_human` cookie in
-	 * [MangaLoaderContext.cookieJar], which future requests reuse
-	 * automatically. Retried up to 3 times because the server's fraud
-	 * detection is intentionally noisy.
-	 */
+	private suspend fun loginDummyAccount() {
+		val body = JSONObject().apply {
+			put("action", "login")
+			put("email", "zann@heckr.xyz")
+			put("password", "razancell")
+		}
+		val url = "https://$domain/api/auth-email.php"
+		val json = try {
+			webClient.httpPost(url, body).parseJson()
+		} catch (e: Exception) {
+			throw Exception("Login akun tumbal gagal: ${e.message}", e)
+		}
+		if (!json.optBoolean("ok", false) || !json.optBoolean("authenticated", false)) {
+			throw Exception(json.optString("message", "Login akun tumbal gagal"))
+		}
+	}
+
 	private suspend fun solveHumanChallenge() {
 		var lastMessage: String? = null
 		repeat(3) {
