@@ -33,24 +33,21 @@ internal class Mgkomik(context: MangaLoaderContext) :
     override val sourceLocale: Locale = Locale.ENGLISH
 
     override fun getRequestHeaders(): Headers {
-        return super.getRequestHeaders()
-            .newBuilder()
-            .set(
-                CommonHeaders.ACCEPT,
-                "text/html,application/xhtml+xml,application/xml;q=0.9," +
-                    "image/avif,image/webp,image/apng,*/*;q=0.8",
-            )
-            .set(
-                CommonHeaders.ACCEPT_LANGUAGE,
-                "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-            )
-            .set(CommonHeaders.SEC_FETCH_DEST, "document")
-            .set(CommonHeaders.SEC_FETCH_MODE, "navigate")
-            .set(CommonHeaders.SEC_FETCH_SITE, "same-origin")
-            .set(CommonHeaders.SEC_FETCH_USER, "?1")
-            .set(CommonHeaders.UPGRADE_INSECURE_REQUESTS, "1")
-            .build()
-    }
+    return super.getRequestHeaders()
+        .newBuilder()
+        .set(CommonHeaders.ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+        .set(CommonHeaders.ACCEPT_LANGUAGE, "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
+        .set(CommonHeaders.SEC_FETCH_DEST, "document")
+        .set(CommonHeaders.SEC_FETCH_MODE, "navigate")
+        .set(CommonHeaders.SEC_FETCH_SITE, "none")
+        .set(CommonHeaders.SEC_FETCH_USER, "?1")
+        .set(CommonHeaders.UPGRADE_INSECURE_REQUESTS, "1")
+        // Client Hints
+        .set(CommonHeaders.SEC_CH_UA, "\"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\", \"Not-A.Brand\";v=\"99\"")
+        .set(CommonHeaders.SEC_CH_UA_MOBILE, "?1")
+        .set(CommonHeaders.SEC_CH_UA_PLATFORM, "\"Android\"")
+        .build()
+}
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()

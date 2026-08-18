@@ -18,8 +18,11 @@ internal class Softkomik(context: MangaLoaderContext) :
 
     override val configKeyDomain = ConfigKey.Domain("softkomik.co")
 
-    private val apiUrl = "https://v2.softdevices.my.id"
+    private val apiUrl: String
+        get() = "https://$domain"
+
     private val coverUrl = "https://cover.softdevices.my.id/softkomik-cover"
+    private val imageQuery = "T4Kmwztku"
 
     private val cdnUrls = listOf(
         "https://psy1.komik.im",
@@ -70,8 +73,6 @@ internal class Softkomik(context: MangaLoaderContext) :
         }.getOrDefault(emptySet()).also { tagsCache["all"] = it }
     }
 
-    // ── Session cache ─────────────────────────────────────────────────────────
-
     private val sessionCache = ConcurrentHashMap<String, SessionDto>()
 
     private suspend fun getSession(endpoint: String): SessionDto {
@@ -82,22 +83,18 @@ internal class Softkomik(context: MangaLoaderContext) :
             .add("Referer", "https://$domain/")
             .add("Origin", "https://$domain")
             .build()
-        val res = webClient.httpGet("https://$domain$endpoint", headers).parseJson()
-        // The sign is returned as `<hex>|<suffix>` — the server only uses the hex prefix.
-        val rawSign = res.optString("sign", "")
+        val res = webClient.httpGet("$apiUrl$endpoint", headers).parseJson()
         val session = SessionDto(
             ex = res.optLong("ex", System.currentTimeMillis() + 60_000L),
             token = res.optString("token", ""),
-            sign = rawSign.substringBefore('|'),
+            sign = res.optString("sign", "").substringBefore('|'),
         )
         sessionCache[endpoint] = session
         return session
     }
 
-    private suspend fun getListSession(): SessionDto = getSession("/api/session/amsnuy")
-    private suspend fun getChapterImageSession(): SessionDto = getSession("/api/session/chapter/iuisxs")
-
-    // ── LIST PAGE ─────────────────────────────────────────────────────────────
+    private suspend fun getListSession(): SessionDto = getSession("/api/session/aksjkas")
+    private suspend fun getChapterImageSession(): SessionDto = getSession("/api/session/chapter/oaisos")
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         if (!filter.query.isNullOrEmpty()) {
@@ -118,17 +115,16 @@ internal class Softkomik(context: MangaLoaderContext) :
 
         val doc = webClient.httpGet(url, headers).parseHtml()
         val pageProps = extractPageProps(doc) ?: return emptyList()
-        val libData = pageProps.optJSONObject("libData") ?: pageProps
+        val libData = pageProps.optJSONObject("libData") ?: return emptyList()
         val dataArray = libData.optJSONArray("data") ?: return emptyList()
         return parseListData(dataArray)
     }
 
     private suspend fun searchByQuery(query: String, page: Int): List<Manga> {
-        val session = getListSession()
-        val url = "$apiUrl/komik?name=${query.urlEncoded()}&search=true&limit=24&page=$page"
+        if (page > 1) return emptyList()
+
+        val url = "$apiUrl/api/content/search?name=${query.urlEncoded()}"
         val headers = Headers.Builder()
-            .add("X-Token", session.token)
-            .add("X-Sign", session.sign)
             .add("Accept", "application/json")
             .add("Referer", "https://$domain/")
             .add("Origin", "https://$domain")
@@ -165,13 +161,14 @@ internal class Softkomik(context: MangaLoaderContext) :
         return result
     }
 
-    // ── DETAILS ───────────────────────────────────────────────────────────────
-
     override suspend fun getDetails(manga: Manga): Manga {
+        val slug = manga.url.trim('/').substringBefore('/')
+        if (slug.isEmpty()) return manga
+
         val headers = Headers.Builder()
             .add("Referer", "https://$domain/")
             .build()
-        val doc = webClient.httpGet(manga.publicUrl, headers).parseHtml()
+        val doc = webClient.httpGet("https://$domain/$slug", headers).parseHtml()
 
         val pageProps = extractPageProps(doc)
         val detail = pageProps?.optJSONObject("data")
@@ -191,8 +188,7 @@ internal class Softkomik(context: MangaLoaderContext) :
             }
         }
 
-        val slug = manga.url.trim('/').substringBefore('/')
-        val chapters = fetchChapterList(slug, manga.url)
+        val chapters = fetchChapterList(slug)
 
         return manga.copy(
             title = title,
@@ -205,9 +201,9 @@ internal class Softkomik(context: MangaLoaderContext) :
         )
     }
 
-    private suspend fun fetchChapterList(slug: String, mangaUrl: String): List<MangaChapter> {
+    private suspend fun fetchChapterList(slug: String): List<MangaChapter> {
         val session = getListSession()
-        val url = "$apiUrl/komik/$slug/chapter?limit=9999999"
+        val url = "$apiUrl/api/content/komik/${slug.urlEncoded()}/chapter?limit=9999999"
         val headers = Headers.Builder()
             .add("X-Token", session.token)
             .add("X-Sign", session.sign)
@@ -225,7 +221,7 @@ internal class Softkomik(context: MangaLoaderContext) :
             val chStr = ch.optString("chapter", "")
             if (chStr.isEmpty()) continue
             val number = chStr.substringBefore(".").toFloatOrNull() ?: continue
-            val chapterUrl = "/${slug}/chapter/$chStr"
+            val chapterUrl = "/$slug/chapter/$chStr"
             chapters.add(
                 MangaChapter(
                     id = generateUid(chapterUrl),
@@ -243,8 +239,6 @@ internal class Softkomik(context: MangaLoaderContext) :
         chapters.sortBy { it.number }
         return chapters
     }
-
-    // ── PAGES ─────────────────────────────────────────────────────────────────
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val headers = Headers.Builder()
@@ -264,9 +258,10 @@ internal class Softkomik(context: MangaLoaderContext) :
         val isInter2 = chapterData?.optBoolean("storageInter2", false) ?: false
 
         if (imageSrc.length() == 0) {
-            val id = chapterData?.optString("_id")
-                ?: komik?.optString("_id")
-                ?: return emptyList()
+            val id = listOfNotNull(
+                chapterData?.optString("_id")?.takeIf { it.isNotBlank() },
+                komik?.optString("_id")?.takeIf { it.isNotBlank() },
+            ).firstOrNull() ?: return emptyList()
             imageSrc = fetchChapterImages(slug, chNum, id)
         }
 
@@ -279,7 +274,7 @@ internal class Softkomik(context: MangaLoaderContext) :
             if (path.isEmpty()) return@mapNotNull null
             MangaPage(
                 id = generateUid(path),
-                url = "$host/$path",
+                url = "$host/$path?id=$imageQuery",
                 preview = null,
                 source = source,
             )
@@ -289,7 +284,7 @@ internal class Softkomik(context: MangaLoaderContext) :
     private suspend fun fetchChapterImages(slug: String, chapter: String, id: String): JSONArray {
         return try {
             val session = getChapterImageSession()
-            val url = "$apiUrl/komik/$slug/chapter/$chapter/imgs/$id"
+            val url = "$apiUrl/api/komik/${slug.urlEncoded()}/chapter/${chapter.urlEncoded()}/img?id=${id.urlEncoded()}"
             val headers = Headers.Builder()
                 .add("X-Token", session.token)
                 .add("X-Sign", session.sign)
@@ -303,8 +298,6 @@ internal class Softkomik(context: MangaLoaderContext) :
             JSONArray()
         }
     }
-
-    // ── HELPERS ───────────────────────────────────────────────────────────────
 
     private fun parseStatus(text: String?): MangaState? = when {
         text == null -> null
