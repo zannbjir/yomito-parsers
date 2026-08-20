@@ -90,7 +90,17 @@ internal class Ryzukomik(context: MangaLoaderContext) :
 		val images = runCatching { JSONArray(raw.replace("\\/", "/")) }.getOrNull() ?: return emptyList()
 		return (0 until images.length()).mapNotNull { index ->
 			val url = images.optString(index, "").trim()
-			if (url.isBlank()) null else MangaPage(generateUid(url), url, null, source)
+			if (url.isBlank()) {
+				null
+			} else {
+				// The reader itself uses DuckDuckGo because the image origins reject direct requests.
+				val pageUrl = if (url.startsWith("https://proxy.duckduckgo.com/iu/?u=")) {
+					url
+				} else {
+					"https://proxy.duckduckgo.com/iu/?u=${url.urlEncoded()}"
+				}
+				MangaPage(generateUid(pageUrl), pageUrl, null, source)
+			}
 		}
 	}
 

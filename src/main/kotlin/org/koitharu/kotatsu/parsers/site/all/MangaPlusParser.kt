@@ -21,6 +21,86 @@ import org.koitharu.kotatsu.parsers.util.json.mapJSONNotNull
 import org.koitharu.kotatsu.parsers.util.suspendlazy.suspendLazy
 import java.util.*
 
+internal data class MangaPlusViewerPage(
+	val imageUrl: String,
+	val encryptionKey: String,
+)
+
+/** Minimal decoder for the viewer fields used by the Kotatsu parser. */
+internal fun decodeMangaPlusViewerV3(bytes: ByteArray): List<MangaPlusViewerPage> {
+	val response = ProtoReader(bytes)
+	val success = response.messages(1).firstOrNull() ?: return emptyList()
+	val viewer = ProtoReader(success).messages(10).firstOrNull() ?: return emptyList()
+	return ProtoReader(viewer).messages(1).mapNotNull { pageBytes ->
+		val mangaPage = ProtoReader(pageBytes).messages(1).firstOrNull() ?: return@mapNotNull null
+		val page = ProtoReader(mangaPage)
+		val imageUrl = page.strings(1).firstOrNull().orEmpty()
+		val encryptionKey = page.strings(5).firstOrNull().orEmpty()
+		if (imageUrl.isBlank()) null else MangaPlusViewerPage(imageUrl, encryptionKey)
+	}
+}
+
+private class ProtoReader(private val bytes: ByteArray) {
+	private var position = 0
+	private var parsed = false
+	private val fieldsByNumber = HashMap<Int, MutableList<Any>>()
+
+	fun strings(field: Int): List<String> = fieldValues(field)
+		.mapNotNull { value -> value as? ByteArray }
+		.map { value -> value.toString(Charsets.UTF_8) }
+
+	fun messages(field: Int): List<ByteArray> = fieldValues(field)
+		.mapNotNull { value -> value as? ByteArray }
+
+	private fun fieldValues(field: Int): List<Any> {
+		parse()
+		return fieldsByNumber[field].orEmpty()
+	}
+
+	private fun parse() {
+		if (parsed) return
+		parsed = true
+		while (position < bytes.size) {
+			val tag = readVarint().toInt()
+			val field = tag ushr 3
+			when (tag and 7) {
+				0 -> readVarint()
+				1 -> skip(8)
+				2 -> {
+					val value = readBytes()
+					fieldsByNumber.getOrPut(field) { ArrayList() }.add(value)
+				}
+				5 -> skip(4)
+				else -> position = bytes.size
+			}
+		}
+	}
+
+	private fun readBytes(): ByteArray {
+		val length = readVarint().toInt()
+		val end = (position + length).coerceAtMost(bytes.size)
+		val value = bytes.copyOfRange(position, end)
+		position = end
+		return value
+	}
+
+	private fun readVarint(): Long {
+		var value = 0L
+		var shift = 0
+		while (position < bytes.size && shift < 64) {
+			val byte = bytes[position++].toInt()
+			value = value or ((byte and 0x7f).toLong() shl shift)
+			if (byte and 0x80 == 0) return value
+			shift += 7
+		}
+		return value
+	}
+
+	private fun skip(count: Int) {
+		position = (position + count).coerceAtMost(bytes.size)
+	}
+}
+
 internal abstract class MangaPlusParser(
 	context: MangaLoaderContext,
 	source: MangaParserSource,
@@ -48,7 +128,10 @@ internal abstract class MangaPlusParser(
 
 	override suspend fun getFilterOptions() = MangaListFilterOptions()
 
-	private val extraHeaders = Headers.headersOf("Session-Token", UUID.randomUUID().toString())
+	private val extraHeaders = Headers.headersOf(
+		"Session-Token",
+		UUID.randomUUID().toString(),
+	)
 
 	override suspend fun getList(order: SortOrder, filter: MangaListFilter): List<Manga> {
 		return when {
@@ -201,28 +284,28 @@ internal abstract class MangaPlusParser(
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val pages = apiCall("/manga_viewer?chapter_id=${chapter.url}&split=yes&img_quality=super_high")
-			.getJSONObject("mangaViewer")
-			.getJSONArray("pages")
+		val viewerUrl = "$apiUrl/manga_viewer_v3?chapter_id=${chapter.url}&split=yes&img_quality=high&clang=eng"
+		val response = webClient.httpGet(viewerUrl, extraHeaders)
+		val bytes = response.body?.bytes().orEmpty()
+		response.close()
 
-		return pages.mapJSONNotNull {
-			val mangaPage = it.optJSONObject("mangaPage")
-				?: return@mapJSONNotNull null
-			val url = mangaPage.getString("imageUrl")
-			val encryptionKey = mangaPage.getStringOrNull("encryptionKey")
+		return decodeMangaPlusViewerV3(bytes).map { page ->
 			MangaPage(
-				id = generateUid(url),
-				url = url + if (encryptionKey == null) "" else "#$encryptionKey",
+				id = generateUid(page.imageUrl),
+				url = "${page.imageUrl}#${page.encryptionKey}",
 				preview = null,
 				source = source,
 			)
 		}
 	}
 
-	// image descrambling
+	// image descrambling + required referrer/origin for signed CDN
 	override fun intercept(chain: Interceptor.Chain): Response {
 		val request = chain.request()
-		val response = chain.proceed(request)
+		val builder = request.newBuilder()
+			.header("Referer", "https://mangaplus.shueisha.co.jp/")
+			.header("Origin", "https://mangaplus.shueisha.co.jp")
+		val response = chain.proceed(builder.build())
 		val encryptionKey = request.url.fragment
 
 		if (encryptionKey.isNullOrEmpty()) {
