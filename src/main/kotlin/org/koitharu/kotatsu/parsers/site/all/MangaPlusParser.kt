@@ -286,7 +286,7 @@ internal abstract class MangaPlusParser(
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val viewerUrl = "$apiUrl/manga_viewer_v3?chapter_id=${chapter.url}&split=yes&img_quality=high&clang=eng"
 		val response = webClient.httpGet(viewerUrl, extraHeaders)
-		val bytes = response.body?.bytes().orEmpty()
+		val bytes = response.body?.bytes() ?: ByteArray(0)
 		response.close()
 
 		return decodeMangaPlusViewerV3(bytes).map { page ->

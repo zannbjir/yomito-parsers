@@ -8,7 +8,7 @@ import org.koitharu.kotatsu.parsers.site.mangareader.MangaReaderParser
 import java.util.Locale
 
 @MangaSourceParser("MANHWALIST", "ManhwaList", "id")
-internal class ManhwaListOrg(context: MangaLoaderContext) :
+internal class ManhwaList(context: MangaLoaderContext) :
 	MangaReaderParser(
 		context,
 		MangaParserSource.MANHWALIST,
