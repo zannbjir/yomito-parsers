@@ -1,5 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.id
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.json.JSONArray
 import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -119,12 +121,15 @@ internal class Voratoon(context: MangaLoaderContext) :
 		}
 	}
 
-	override suspend fun getDetails(manga: Manga): Manga {
+	override suspend fun getDetails(manga: Manga): Manga = coroutineScope {
 		val slug = manga.url.substringAfterLast('/')
-		val json = webClient.httpGet(buildDetailsUrl(slug)).parseJson()
-		val item = json.optJSONArray("data")?.optJSONObject(0) ?: return manga
-		val data = item.optJSONObject("data") ?: return manga
-		return manga.copy(
+		val detailsDeferred = async { webClient.httpGet(buildDetailsUrl(slug)).parseJson() }
+		val chaptersDeferred = async { webClient.httpGet(buildChaptersUrl(slug)).parseJson() }
+		val json = detailsDeferred.await()
+		val item = json.optJSONArray("data")?.optJSONObject(0) ?: return@coroutineScope manga
+		val data = item.optJSONObject("data") ?: return@coroutineScope manga
+		val chapters = chaptersDeferred.await().optJSONArray("data")
+		manga.copy(
 			title = data.optString("title").ifBlank { manga.title },
 			altTitles = setOfNotNull(data.optString("nativeTitle").ifBlank { null }),
 			coverUrl = data.optString("coverImage").ifEmpty { manga.coverUrl },
@@ -134,7 +139,7 @@ internal class Voratoon(context: MangaLoaderContext) :
 			state = parseState(data.optString("status")),
 			authors = parseAuthors(data.optString("author")),
 			description = data.optString("synopsis").ifEmpty { null },
-			chapters = parseChapters(item.optJSONArray("chapters"), slug),
+			chapters = parseChapters(chapters, slug),
 		)
 	}
 
@@ -144,31 +149,55 @@ internal class Voratoon(context: MangaLoaderContext) :
 			return error("Voratoon: invalid chapter url: ${chapter.url}")
 		}
 		val slug = parts[1]
-		val chapterId = parts[3].toLongOrNull() ?: return emptyList()
-		val json = webClient.httpGet(buildDetailsUrl(slug)).parseJson()
-		val item = json.optJSONArray("data")?.optJSONObject(0) ?: return emptyList()
-		val chapters = item.optJSONArray("chapters") ?: return emptyList()
-		for (i in 0 until chapters.length()) {
-			val jo = chapters.optJSONObject(i) ?: continue
-			if (jo.optLong("id") != chapterId) continue
-			val images = jo.optJSONObject("dataImages") ?: return emptyList()
-			val keys = images.keys().asSequence().sortedBy { it.toIntOrNull() ?: Int.MAX_VALUE }.toList()
-			val result = ArrayList<MangaPage>(keys.size)
-			keys.forEach { key ->
-				val url = images.optString(key)
-				if (url.isNotBlank()) {
-					result.add(MangaPage(id = generateUid(url), url = url, preview = null, source = source))
-				}
-			}
-			return result
-		}
-		return emptyList()
+		val storedChapter = parts[3]
+		val directResult = runCatching { fetchChapterPages(slug, storedChapter) }
+		if (directResult.isSuccess) return directResult.getOrThrow()
+
+		// Compatibility with chapter URLs created by the previous parser, which stored the API id here.
+		val legacyId = storedChapter.toLongOrNull() ?: throw directResult.exceptionOrNull()!!
+		val chapterNumber = findChapterNumber(slug, legacyId) ?: throw directResult.exceptionOrNull()!!
+		return fetchChapterPages(slug, formatChapterNumber(chapterNumber))
 	}
 
 	private fun buildDetailsUrl(slug: String): String = buildString {
 		append("https://").append(domain).append("/series")
-		append("?take=1&page=1&includeMeta=true&takeChapter=100")
+		append("?take=1&page=1&includeMeta=true&takeChapter=1")
 		append("&filter=slug%3D%3D").append(slug.urlEncoded())
+	}
+
+	private fun buildChaptersUrl(slug: String): String =
+		"https://$domain/series/${slug.urlEncoded()}/chapters"
+
+	private suspend fun fetchChapterPages(slug: String, chapterNumber: String): List<MangaPage> {
+		val url = "${buildChaptersUrl(slug)}/${chapterNumber.urlEncoded()}"
+		val root = webClient.httpGet(url).parseJson()
+		val images = root.optJSONObject("data")
+			?.optJSONObject("data")
+			?.optJSONArray("images")
+			?: return emptyList()
+		return List(images.length()) { index -> images.optString(index).trim() }
+			.filter { it.isNotEmpty() }
+			.distinct()
+			.map { imageUrl ->
+				MangaPage(
+					id = generateUid(imageUrl),
+					url = imageUrl,
+					preview = null,
+					source = source,
+				)
+			}
+	}
+
+	private suspend fun findChapterNumber(slug: String, chapterId: Long): Float? {
+		val chapters = webClient.httpGet(buildChaptersUrl(slug)).parseJson().optJSONArray("data")
+			?: return null
+		for (index in 0 until chapters.length()) {
+			val chapter = chapters.optJSONObject(index) ?: continue
+			if (chapter.optLong("id") == chapterId) {
+				return parseChapterNumber(chapter)
+			}
+		}
+		return null
 	}
 
 	private fun parseManga(jo: JSONObject): Manga? {
@@ -207,14 +236,15 @@ internal class Voratoon(context: MangaLoaderContext) :
 			val jo = arr.optJSONObject(i) ?: continue
 			val id = jo.optLong("id")
 			if (id <= 0L) continue
-			val data = jo.optJSONObject("data")
+			val number = parseChapterNumber(jo)
+			val chapterNumber = formatChapterNumber(number)
 			result.add(
 				MangaChapter(
 					id = generateUid(id),
-					title = data?.optString("title")?.takeIf { it.isNotBlank() },
-					number = jo.optDouble("chapterIndex", 0.0).toFloat(),
+					title = "Chapter $chapterNumber",
+					number = number,
 					volume = 0,
-					url = "/series/$slug/chapters/$id",
+					url = "/series/$slug/chapters/$chapterNumber",
 					scanlator = null,
 					uploadDate = parseChapterDate(jo.optString("createdAt")),
 					branch = null,
@@ -222,8 +252,24 @@ internal class Voratoon(context: MangaLoaderContext) :
 				),
 			)
 		}
-		return result
+		return result.sortedWith(
+			compareBy<MangaChapter> { it.number }
+				.thenBy { it.uploadDate }
+				.thenBy { it.id },
+		)
 	}
+
+	private fun parseChapterNumber(chapter: JSONObject): Float {
+		val topLevel = chapter.optDouble("chapterIndex", Double.NaN)
+		return if (topLevel.isNaN()) {
+			chapter.optJSONObject("data")?.optDouble("index", 0.0)?.toFloat() ?: 0f
+		} else {
+			topLevel.toFloat()
+		}
+	}
+
+	private fun formatChapterNumber(number: Float): String =
+		if (number % 1f == 0f) number.toInt().toString() else number.toString()
 
 	// createdAt example: 2026-08-16T17:21:23.416+00:00
 	private fun parseChapterDate(value: String): Long {
