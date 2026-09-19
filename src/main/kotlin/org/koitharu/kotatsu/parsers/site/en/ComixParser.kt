@@ -886,7 +886,7 @@ internal class Comix(context: MangaLoaderContext) :
     /** Detected here, resolved by the app. */
     private fun requestCloudflareVerification(url: String, cause: Throwable? = null): Nothing {
         try {
-            context.requestCloudflareVerification(this, url)
+            context.requestBrowserAction(this, url)
         } catch (e: UnsupportedOperationException) {
             throw ParseException(CLOUDFLARE_MESSAGE, url, cause ?: e)
         }
