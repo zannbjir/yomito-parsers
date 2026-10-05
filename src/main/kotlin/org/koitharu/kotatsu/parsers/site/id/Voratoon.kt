@@ -18,18 +18,18 @@ import java.util.concurrent.ConcurrentHashMap
 internal class Voratoon(context: MangaLoaderContext) :
 	PagedMangaParser(context, MangaParserSource.VORATOON, pageSize = 30) {
 
-	override val configKeyDomain = ConfigKey.Domain("api.voratoon.com", "v1.voratoon.com")
+	override val configKeyDomain = ConfigKey.Domain("api.voratoon.com", "v6.voratoon.com")
 
 	override suspend fun getFavicons(): Favicons {
 		return Favicons(
 			listOf(
 				Favicon(
-					url = "https://v1.voratoon.com/icon.png",
+					url = "https://v6.voratoon.com/icon.png",
 					size = 512,
 					rel = null,
 				),
 			),
-			referer = "https://v1.voratoon.com",
+			referer = "https://v6.voratoon.com",
 		)
 	}
 
@@ -145,7 +145,7 @@ internal class Voratoon(context: MangaLoaderContext) :
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val parts = chapter.url.trim('/').split('/')
-		if (parts.size < 4 || parts[0] != "series" || parts[2] != "chapters") {
+		if (parts.size < 4 || parts[0] != "series" || (parts[2] != "chapters" && parts[2] != "chapter")) {
 			return error("Voratoon: invalid chapter url: ${chapter.url}")
 		}
 		val slug = parts[1]
@@ -210,7 +210,7 @@ internal class Voratoon(context: MangaLoaderContext) :
 			title = data.optString("title").ifBlank { "Untitled" },
 			altTitles = setOfNotNull(data.optString("nativeTitle").ifBlank { null }),
 			url = "/series/$slug",
-			publicUrl = "https://v1.voratoon.com/series/$slug",
+			publicUrl = "https://v6.voratoon.com/series/$slug",
 			rating = data.optDouble("rating", 0.0).let { if (it > 0f) it.toFloat() / 10f else RATING_UNKNOWN },
 			contentRating = ContentRating.SAFE,
 			coverUrl = data.optString("coverImage").ifEmpty { null },
@@ -244,7 +244,7 @@ internal class Voratoon(context: MangaLoaderContext) :
 					title = "Chapter $chapterNumber",
 					number = number,
 					volume = 0,
-					url = "/series/$slug/chapters/$chapterNumber",
+					url = "/series/$slug/chapter/$chapterNumber",
 					scanlator = null,
 					uploadDate = parseChapterDate(jo.optString("createdAt")),
 					branch = null,
