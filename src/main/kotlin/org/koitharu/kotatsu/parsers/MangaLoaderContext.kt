@@ -55,6 +55,14 @@ public abstract class MangaLoaderContext {
 		throw UnsupportedOperationException("Browser is not available")
 	}
 
+	/**
+	 * Ask the host application to resolve Cloudflare verification for [url].
+	 * Hosts without a dedicated resolver fall back to the regular browser action.
+	 */
+	public open fun requestCloudflareVerification(parser: MangaParser, url: String): Nothing {
+		requestBrowserAction(parser, url)
+	}
+
 	public abstract fun getConfig(source: MangaSource): MangaSourceConfig
 
 	public abstract fun getDefaultUserAgent(): String
@@ -129,18 +137,14 @@ public abstract class MangaLoaderContext {
         throw UnsupportedOperationException("WebView URL capture is not available")
     }
 
-    /**
-     * Extract VRF (Verification Response Format) token from MangaFire-style AJAX requests
-     * Loads the page and captures AJAX requests containing VRF parameters.
-     *
-     * @param pageUrl The manga page URL to load
-     * @param timeout Maximum time to wait for VRF token (milliseconds)
-     * @return The extracted VRF token, or null if not found
-     */
-    public open suspend fun extractVrfToken(
-        pageUrl: String,
-        timeout: Long = 15000L
-    ): String? {
-        throw UnsupportedOperationException("VRF token extraction is not available")
-    }
+	/**
+	 * Extract VRF (Verification Response Format) token from MangaFire-style AJAX requests
+	 * Loads the page and captures AJAX requests containing VRF parameters.
+	 */
+	public open suspend fun extractVrfToken(
+		pageUrl: String,
+		timeout: Long = 15000L
+	): String? {
+		throw UnsupportedOperationException("VRF token extraction is not available")
+	}
 }
