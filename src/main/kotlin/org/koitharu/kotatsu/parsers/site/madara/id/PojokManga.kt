@@ -1,11 +1,13 @@
 package org.koitharu.kotatsu.parsers.site.madara.id
 
+import org.koitharu.kotatsu.parsers.Broken
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.model.MangaParserSource
 import org.koitharu.kotatsu.parsers.site.madara.MadaraParser
 import java.util.*
 
+@Broken
 @MangaSourceParser("POJOKMANGA", "PojokManga", "id")
 internal class PojokManga(context: MangaLoaderContext) :
 	MadaraParser(context, MangaParserSource.POJOKMANGA, "pojokmanga.info") {

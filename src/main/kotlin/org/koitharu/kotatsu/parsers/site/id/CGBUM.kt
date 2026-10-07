@@ -54,20 +54,29 @@ internal class Cgbum(context: MangaLoaderContext) :
 		)
 
 	override suspend fun getFilterOptions(): MangaListFilterOptions {
-		val tags = runCatching {
-			webClient.httpGet("https://$domain/daftar-komik", getRequestHeaders())
-				.parseHtml()
-				.select("input[name=\"genres[]\"]")
-				.mapNotNullToSet { input ->
-					val value = input.attr("value").trim()
-					if (value.isEmpty()) null else MangaTag(value, value.lowercase(), source)
-				}
-		}.getOrDefault(emptySet())
+		val tags = runCatching { fetchTags() }.getOrDefault(emptySet())
 		return MangaListFilterOptions(
 			availableTags = tags,
 			availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
 			availableContentTypes = EnumSet.of(ContentType.MANGA, ContentType.MANHWA, ContentType.MANHUA),
 		)
+	}
+
+	private suspend fun fetchTags(): Set<MangaTag> {
+		val result = LinkedHashSet<MangaTag>()
+		webClient.httpGet("https://$domain/daftar-komik", getRequestHeaders())
+			.parseHtml()
+			.select("input[name=\"genres[]\"]")
+			.mapNotNull { it.attr("value").trim().ifEmpty { null } }
+			.distinctBy { it.lowercase() }
+			.forEach { value ->
+				result += MangaTag(
+					title = value.replaceFirstChar { it.uppercaseChar() },
+					key = value,
+					source = source,
+				)
+			}
+		return result
 	}
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
@@ -143,7 +152,11 @@ internal class Cgbum(context: MangaLoaderContext) :
 	override suspend fun getDetails(manga: Manga): Manga {
 		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
 
-		val title = doc.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotEmpty() } ?: manga.title
+		val title = doc.selectFirst("h1")?.text()?.trim()
+			?.removeSuffix(" Bahasa Indonesia")
+			?.removeSuffix(" Indonesia")
+			?.takeIf { it.isNotEmpty() }
+			?: manga.title
 
 		val altTitles = doc.selectFirst(".comic-alt-title")?.text()
 			?.split(',')
@@ -185,7 +198,7 @@ internal class Cgbum(context: MangaLoaderContext) :
 			}
 		}
 
-		val isAdult = doc.selectFirst(".badge-pornhwa, .adult-sensitive-cover") != null
+		val isAdult = doc.selectFirst("article.comic-detail .badge-pornhwa, article.comic-detail .adult-sensitive-cover") != null
 
 		val chapters = doc.select(".chapter-grid a.ch-grid-item").mapChapters(reversed = true) { index, el ->
 			val chUrl = el.attrAsRelativeUrlOrNull("href") ?: return@mapChapters null
@@ -223,18 +236,28 @@ internal class Cgbum(context: MangaLoaderContext) :
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
-		return doc.select("#readerImages img").mapNotNull { img ->
-			val url = img.attr("data-src").ifBlank { img.attr("src") }.trim()
+		val urls = LinkedHashSet<String>()
+		doc.select("#readerImages .page-container").forEach { el ->
+			val url = el.attr("data-url").trim().ifBlank { el.attr("data-path").trim() }
 			if (url.startsWith("http")) {
-				MangaPage(
-					id = generateUid(url),
-					url = url,
-					preview = null,
-					source = source,
-				)
-			} else {
-				null
+				urls += url
 			}
+		}
+		if (urls.isEmpty()) {
+			doc.select("#readerImages img").forEach { img ->
+				val url = img.attr("data-src").ifBlank { img.attr("src") }.trim()
+				if (url.startsWith("http")) {
+					urls += url
+				}
+			}
+		}
+		return urls.map { url ->
+			MangaPage(
+				id = generateUid(url),
+				url = url,
+				preview = null,
+				source = source,
+			)
 		}
 	}
 }
