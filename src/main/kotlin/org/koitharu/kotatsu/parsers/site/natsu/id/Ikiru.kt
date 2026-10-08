@@ -1,49 +1,34 @@
-package org.koitharu.kotatsu.parsers.site.id
+package org.koitharu.kotatsu.parsers.site.natsu.id
 
 import okhttp3.Headers
-import org.jsoup.nodes.Document
+import org.json.JSONArray
+import org.json.JSONObject
+import org.jsoup.Jsoup
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
-import org.koitharu.kotatsu.parsers.model.ContentRating
-import org.koitharu.kotatsu.parsers.model.ContentType
-import org.koitharu.kotatsu.parsers.model.Manga
-import org.koitharu.kotatsu.parsers.model.MangaChapter
-import org.koitharu.kotatsu.parsers.model.MangaListFilter
-import org.koitharu.kotatsu.parsers.model.MangaListFilterCapabilities
-import org.koitharu.kotatsu.parsers.model.MangaListFilterOptions
-import org.koitharu.kotatsu.parsers.model.MangaPage
-import org.koitharu.kotatsu.parsers.model.MangaParserSource
-import org.koitharu.kotatsu.parsers.model.MangaState
-import org.koitharu.kotatsu.parsers.model.MangaTag
-import org.koitharu.kotatsu.parsers.model.RATING_UNKNOWN
-import org.koitharu.kotatsu.parsers.model.SortOrder
-import org.koitharu.kotatsu.parsers.util.attrAsRelativeUrlOrNull
-import org.koitharu.kotatsu.parsers.util.generateUid
-import org.koitharu.kotatsu.parsers.util.mapChapters
-import org.koitharu.kotatsu.parsers.util.mapNotNullToSet
-import org.koitharu.kotatsu.parsers.util.parseHtml
-import org.koitharu.kotatsu.parsers.util.toAbsoluteUrl
-import org.koitharu.kotatsu.parsers.util.urlEncoded
+import org.koitharu.kotatsu.parsers.model.*
+import org.koitharu.kotatsu.parsers.util.*
+import java.text.SimpleDateFormat
 import java.util.EnumSet
+import java.util.Locale
+import java.util.TimeZone
 
-@MangaSourceParser("CGBUM", "CGBUM", "id")
-internal class Cgbum(context: MangaLoaderContext) :
-	PagedMangaParser(context, MangaParserSource.CGBUM, 24) {
+@MangaSourceParser("IKIRU", "Ikiru", "id")
+internal class Ikiru(context: MangaLoaderContext) :
+	PagedMangaParser(context, MangaParserSource.IKIRU, pageSize = 24) {
 
-	override val configKeyDomain = ConfigKey.Domain("cgbum.com")
-
-	override fun getRequestHeaders(): Headers = Headers.Builder()
-		.add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
-		.add("Referer", "https://$domain/")
-		.add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-		.add("Accept-Language", "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
-		.build()
+	override val configKeyDomain = ConfigKey.Domain(
+		"09.ikiru.wtf",
+		"08.ikiru.wtf",
+		"07.ikiru.wtf",
+		"06.ikiru.wtf",
+		"ikiru.wtf",
+	)
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.UPDATED,
-		SortOrder.NEWEST,
 		SortOrder.POPULARITY,
 	)
 
@@ -53,94 +38,81 @@ internal class Cgbum(context: MangaLoaderContext) :
 			isMultipleTagsSupported = true,
 		)
 
-	override suspend fun getFilterOptions(): MangaListFilterOptions {
-		val tags = runCatching { fetchTags() }.getOrDefault(emptySet())
-		return MangaListFilterOptions(
-			availableTags = tags,
-			availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
-			availableContentTypes = EnumSet.of(ContentType.MANGA, ContentType.MANHWA, ContentType.MANHUA),
-		)
-	}
+	override fun getRequestHeaders(): Headers = super.getRequestHeaders().newBuilder()
+		.add("Accept", "application/json, text/plain, */*")
+		.add("Referer", "https://$domain/")
+		.build()
 
-	private suspend fun fetchTags(): Set<MangaTag> {
+	override suspend fun getFavicons(): Favicons = Favicons.single("https://$domain/favicon-32x32.png")
+
+	override suspend fun getFilterOptions(): MangaListFilterOptions = MangaListFilterOptions(
+		availableTags = fetchGenres(),
+		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
+		availableContentTypes = EnumSet.of(ContentType.MANGA, ContentType.MANHWA, ContentType.MANHUA),
+	)
+
+	private suspend fun fetchGenres(): Set<MangaTag> {
+		val data = webClient.httpGet("https://$domain/api/user/genres", getRequestHeaders())
+			.parseJson().optJSONObject("data") ?: return emptySet()
+		val array = data.optJSONArray("allGenres") ?: return emptySet()
 		val result = LinkedHashSet<MangaTag>()
-		webClient.httpGet("https://$domain/daftar-komik", getRequestHeaders())
-			.parseHtml()
-			.select("input[name=\"genres[]\"]")
-			.mapNotNull { it.attr("value").trim().ifEmpty { null } }
-			.distinctBy { it.lowercase() }
-			.forEach { value ->
-				result += MangaTag(
-					title = value.replaceFirstChar { it.uppercaseChar() },
-					key = value,
-					source = source,
-				)
-			}
+		for (i in 0 until array.length()) {
+			val item = array.optJSONObject(i) ?: continue
+			val slug = item.optString("slug").takeIf { it.isNotBlank() } ?: continue
+			val name = item.optString("name").takeIf { it.isNotBlank() } ?: slug
+			result += MangaTag(title = name.toTitleCase(), key = slug, source = source)
+		}
 		return result
 	}
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		val params = ArrayList<String>(6)
 		val url = buildString {
-			append("https://")
-			append(domain)
-			if (!filter.query.isNullOrEmpty()) {
-				append("/cari")
-				params += "q=" + filter.query.urlEncoded()
-			} else {
-				append("/daftar-komik")
-				params += "sort=" + when (order) {
-					SortOrder.NEWEST -> "newest"
-					SortOrder.POPULARITY -> "views"
-					else -> "latest"
-				}
-				when (filter.states.firstOrNull()) {
-					MangaState.ONGOING -> params += "status=ongoing"
-					MangaState.FINISHED -> params += "status=tamat"
-					else -> Unit
-				}
-				when (filter.types.firstOrNull()) {
-					ContentType.MANGA -> params += "type=manga"
-					ContentType.MANHWA -> params += "type=manhwa"
-					ContentType.MANHUA -> params += "type=manhua"
-					else -> Unit
-				}
-				filter.tags.forEach { params += "genres[]=" + it.key.urlEncoded() }
+			append("https://$domain/api/public/library/search?page=").append(page)
+			append("&limit=").append(pageSize)
+			append("&order=").append(if (order == SortOrder.POPULARITY) "popular" else "latest")
+			filter.query?.takeIf { it.isNotBlank() }?.let { append("&search=").append(it.urlEncoded()) }
+			if (filter.tags.isNotEmpty()) {
+				append("&genres=").append(filter.tags.joinToString(",") { it.key })
 			}
-			params += "page=$page"
-			append('?')
-			append(params.joinToString("&"))
+			filter.states.oneOrThrowIfMany()?.let { state ->
+				when (state) {
+					MangaState.ONGOING -> append("&status=ONGOING")
+					MangaState.FINISHED -> append("&status=COMPLETED")
+					else -> Unit
+				}
+			}
+			filter.types.oneOrThrowIfMany()?.let { type ->
+				when (type) {
+					ContentType.MANGA -> append("&type=MANGA")
+					ContentType.MANHWA -> append("&type=MANHWA")
+					ContentType.MANHUA -> append("&type=MANHUA")
+					else -> Unit
+				}
+			}
 		}
-		val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
-		return parseMangaList(doc)
+		val data = webClient.httpGet(url, getRequestHeaders()).parseJson().optJSONObject("data")
+			?: return emptyList()
+		return parseList(data.optJSONArray("mangas"))
 	}
 
-	private fun parseMangaList(doc: Document): List<Manga> {
-		val result = ArrayList<Manga>(24)
-		doc.select("article.comic-card").forEach { card ->
-			val link = card.selectFirst("a[href*=\"/komik/\"]") ?: return@forEach
-			val relUrl = link.attrAsRelativeUrlOrNull("href") ?: return@forEach
-			if (!relUrl.startsWith("/komik/")) return@forEach
-			val title = card.selectFirst(".comic-card-title")?.text()?.trim()
-				?: link.selectFirst("img")?.attr("alt")?.trim()
-				?: return@forEach
-			if (title.isEmpty()) return@forEach
-			val cover = card.selectFirst("img")?.let { img ->
-				img.attr("data-src").ifBlank { img.attr("src") }
-			}?.ifBlank { null }
-			val isAdult = card.attr("data-adult") == "1" ||
-				card.selectFirst(".badge-pornhwa, .adult-sensitive-cover") != null
+	private fun parseList(array: JSONArray?): List<Manga> {
+		if (array == null) return emptyList()
+		val result = ArrayList<Manga>(array.length())
+		for (i in 0 until array.length()) {
+			val item = array.optJSONObject(i) ?: continue
+			val slug = item.optString("slug").takeIf { it.isNotBlank() } ?: continue
+			val title = item.optString("title").takeIf { it.isNotBlank() } ?: continue
 			result += Manga(
-				id = generateUid(relUrl),
+				id = generateUid(slug),
 				title = title,
 				altTitles = emptySet(),
-				url = relUrl,
-				publicUrl = relUrl.toAbsoluteUrl(domain),
-				coverUrl = cover,
+				url = "/manga/$slug",
+				publicUrl = "https://$domain/manga/$slug",
+				coverUrl = item.getStringOrNull("featuredImage"),
 				largeCoverUrl = null,
 				rating = RATING_UNKNOWN,
-				contentRating = if (isAdult) ContentRating.ADULT else null,
-				tags = emptySet(),
+				contentRating = null,
+				tags = parseGenres(item.optJSONObject("metadata")?.optJSONArray("genre")),
 				state = null,
 				authors = emptySet(),
 				source = source,
@@ -150,114 +122,111 @@ internal class Cgbum(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getDetails(manga: Manga): Manga {
-		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
-
-		val title = doc.selectFirst("h1")?.text()?.trim()
-			?.removeSuffix(" Bahasa Indonesia")
-			?.removeSuffix(" Indonesia")
-			?.takeIf { it.isNotEmpty() }
-			?: manga.title
-
-		val altTitles = doc.selectFirst(".comic-alt-title")?.text()
-			?.split(',')
-			?.map { it.trim() }
-			?.filter { it.isNotEmpty() }
-			?.toSet()
-			?: emptySet()
-
-		val cover = doc.selectFirst(".comic-cover img")?.let { img ->
-			img.attr("data-src").ifBlank { img.attr("src") }
-		}?.ifBlank { null }
-			?: doc.selectFirst("meta[property=og:image]")?.attr("content")?.ifBlank { null }
-			?: manga.coverUrl
-
-		val tags = doc.select(".comic-genres a.genre-pill, .comic-genres a").mapNotNullToSet { a ->
-			val tagTitle = a.text().trim()
-			if (tagTitle.isEmpty()) null else MangaTag(tagTitle, tagTitle.lowercase(), source)
-		}
-
-		val description = doc.selectFirst(".comic-synopsis .synopsis-content")
-			?.text()?.trim()?.ifBlank { null }
-			?: doc.selectFirst(".comic-synopsis")?.text()?.trim()?.ifBlank { null }
-
-		val stateText = doc.selectFirst(".badge-status")?.text()?.trim()?.lowercase()
-		val state = when {
-			stateText == null -> null
-			stateText.contains("ongoing") -> MangaState.ONGOING
-			stateText.contains("tamat") || stateText.contains("completed") || stateText.contains("end") -> MangaState.FINISHED
-			stateText.contains("hiatus") -> MangaState.PAUSED
-			else -> null
-		}
-
-		var author: String? = null
-		doc.select(".meta-row").forEach { row ->
-			val label = row.selectFirst(".meta-label")?.text()?.trim()?.lowercase() ?: return@forEach
-			val value = row.selectFirst(".meta-value")?.text()?.trim() ?: return@forEach
-			if (label.contains("author") && value != "-") {
-				author = value
+		val slug = manga.url.substringAfterLast("/manga/").trim('/').substringBefore('/')
+		val data = webClient.httpGet("https://$domain/api/public/manga/$slug", getRequestHeaders())
+			.parseJson().getJSONObject("data")
+		val metadata = data.optJSONObject("metadata")
+		val chapters = ArrayList<MangaChapter>()
+		data.optJSONObject("chapters")?.optJSONArray("chapters")?.let { array ->
+			for (i in 0 until array.length()) {
+				val item = array.optJSONObject(i) ?: continue
+				val id = item.optString("id").takeIf { it.isNotBlank() } ?: continue
+				val number = item.optString("number").toFloatOrNull() ?: continue
+				val chapterTitle = item.optString("title").takeIf { it.isNotBlank() }
+					?: "Chapter ${formatNumber(number)}"
+				chapters += MangaChapter(
+					id = generateUid(id),
+					title = chapterTitle,
+					number = number,
+					volume = 0,
+					url = "/manga/$slug/chapter-${formatNumber(number)}",
+					scanlator = null,
+					uploadDate = parseDate(
+						item.getStringOrNull("createdAt") ?: item.getStringOrNull("updatedAt"),
+					),
+					branch = null,
+					source = source,
+				)
 			}
 		}
-
-		val isAdult = doc.selectFirst("article.comic-detail .badge-pornhwa, article.comic-detail .adult-sensitive-cover") != null
-
-		val chapters = doc.select(".chapter-grid a.ch-grid-item").mapChapters(reversed = true) { index, el ->
-			val chUrl = el.attrAsRelativeUrlOrNull("href") ?: return@mapChapters null
-			val chTitle = el.text().trim().ifBlank { "Chapter ${index + 1}" }
-			val number = el.attr("data-chapter-sort").toFloatOrNull()
-				?: el.attr("data-chapter").toFloatOrNull()
-				?: chTitle.substringAfterLast(' ').toFloatOrNull()
-				?: (index + 1).toFloat()
-			MangaChapter(
-				id = generateUid(chUrl),
-				title = chTitle,
-				url = chUrl,
-				number = number,
-				volume = 0,
-				scanlator = null,
-				uploadDate = 0L,
-				branch = null,
-				source = source,
-			)
-		}
-
 		return manga.copy(
-			title = title,
-			altTitles = altTitles,
-			coverUrl = cover,
-			largeCoverUrl = cover,
-			description = description,
-			tags = tags,
-			state = state,
-			authors = setOfNotNull(author),
-			contentRating = if (isAdult) ContentRating.ADULT else manga.contentRating,
+			title = data.optString("title").takeIf { it.isNotBlank() } ?: manga.title,
+			description = Jsoup.parse(data.optString("description")).text().takeIf { it.isNotBlank() } ?: "",
+			coverUrl = data.getStringOrNull("featuredImage") ?: manga.coverUrl,
+			largeCoverUrl = data.getStringOrNull("backgroundImage"),
+			altTitles = metadata?.optJSONArray("alternateTitles")?.toStringList() ?: manga.altTitles,
+			tags = parseGenres(metadata?.optJSONArray("genre")).ifEmpty { manga.tags },
+			authors = setOfNotNull(metadata?.getStringOrNull("author")),
+			state = parseState(data.getStringOrNull("status")) ?: manga.state,
+			contentRating = if (data.optBoolean("isAdult", false)) ContentRating.ADULT else manga.contentRating,
 			chapters = chapters,
 		)
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
-		val urls = LinkedHashSet<String>()
-		doc.select("#readerImages .page-container").forEach { el ->
-			val url = el.attr("data-url").trim().ifBlank { el.attr("data-path").trim() }
-			if (url.startsWith("http")) {
-				urls += url
+		val slug = chapter.url.substringAfterLast("/manga/").substringBefore("/chapter")
+		val number = formatNumber(chapter.number)
+		val payload = webClient.httpGet(
+			"https://$domain/manga/$slug/chapter-$number/_payload.json",
+			getRequestHeaders(),
+		).parseRaw()
+		val array = JSONArray(payload)
+		val needle = "/h/$slug/$number/"
+		val result = ArrayList<MangaPage>()
+		for (i in 0 until array.length()) {
+			val value = array.opt(i)
+			if (value is String && value.startsWith("http") && needle in value) {
+				result += MangaPage(
+					id = generateUid(value),
+					url = value,
+					preview = null,
+					source = source,
+				)
 			}
 		}
-		if (urls.isEmpty()) {
-			doc.select("#readerImages img").forEach { img ->
-				val url = img.attr("data-src").ifBlank { img.attr("src") }.trim()
-				if (url.startsWith("http")) {
-					urls += url
-				}
-			}
-		}
-		return urls.map { url ->
-			MangaPage(
-				id = generateUid(url),
-				url = url,
-				preview = null,
-				source = source,
-			)
-		}
+		return result.distinctBy { it.id }
 	}
+
+	private fun parseGenres(array: JSONArray?): Set<MangaTag> {
+		if (array == null) return emptySet()
+		val result = LinkedHashSet<MangaTag>()
+		for (i in 0 until array.length()) {
+			val item = array.optJSONObject(i) ?: continue
+			val slug = item.optString("slug").takeIf { it.isNotBlank() } ?: continue
+			val name = item.optString("name").takeIf { it.isNotBlank() } ?: slug
+			result += MangaTag(title = name.toTitleCase(), key = slug, source = source)
+		}
+		return result
+	}
+
+	private fun parseState(status: String?): MangaState? = when (status?.uppercase(Locale.ROOT)) {
+		"ONGOING" -> MangaState.ONGOING
+		"COMPLETED", "FINISHED" -> MangaState.FINISHED
+		"HIATUS" -> MangaState.PAUSED
+		"DROP", "DROPPED" -> MangaState.ABANDONED
+		else -> null
+	}
+
+	private fun formatNumber(number: Float): String =
+		if (number % 1f == 0f) number.toInt().toString() else number.toString()
+
+	private fun parseDate(iso: String?): Long {
+		if (iso.isNullOrBlank()) return 0L
+		return runCatching {
+			SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+				.apply { timeZone = TimeZone.getTimeZone("UTC") }
+				.parse(iso)?.time
+		}.getOrNull() ?: 0L
+	}
+
+	private fun JSONArray.toStringList(): Set<String> {
+		val result = LinkedHashSet<String>(length())
+		for (i in 0 until length()) {
+			optString(i).takeIf { it.isNotBlank() }?.let { result += it }
+		}
+		return result
+	}
+
+	private fun JSONObject.getStringOrNull(name: String): String? =
+		if (isNull(name)) null else optString(name).takeIf { it.isNotBlank() }
 }

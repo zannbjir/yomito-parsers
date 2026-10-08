@@ -105,7 +105,7 @@ internal class Cgbum(context: MangaLoaderContext) :
 					ContentType.MANHUA -> params += "type=manhua"
 					else -> Unit
 				}
-				filter.tags.forEach { params += "genres[]=" + it.key.urlEncoded() }
+				filter.tags.firstOrNull()?.let { params += "genres[]=" + it.key.urlEncoded() }
 			}
 			params += "page=$page"
 			append('?')
@@ -179,6 +179,8 @@ internal class Cgbum(context: MangaLoaderContext) :
 		val description = doc.selectFirst(".comic-synopsis .synopsis-content")
 			?.text()?.trim()?.ifBlank { null }
 			?: doc.selectFirst(".comic-synopsis")?.text()?.trim()?.ifBlank { null }
+			?: doc.selectFirst("meta[name=description]")?.attr("content")?.trim()?.ifBlank { null }
+			?: ""
 
 		val stateText = doc.selectFirst(".badge-status")?.text()?.trim()?.lowercase()
 		val state = when {
