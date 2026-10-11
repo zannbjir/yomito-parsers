@@ -61,8 +61,8 @@ internal class KumoPoi(context: MangaLoaderContext) :
 		val result = LinkedHashSet<MangaTag>()
 		for (i in 0 until array.length()) {
 			val item = array.optJSONObject(i) ?: continue
-			val slug = item.optString("slug").takeIf { it.isNotBlank() } ?: continue
-			val name = item.optString("name").takeIf { it.isNotBlank() } ?: continue
+			val slug = item.getStringOrNull("slug") ?: continue
+			val name = item.getStringOrNull("name") ?: continue
 			if (item.optJSONObject("_count")?.optInt("comics", 1) == 0) continue
 			result += MangaTag(title = name.toTitleCase(), key = slug, source = source)
 		}
@@ -109,8 +109,8 @@ internal class KumoPoi(context: MangaLoaderContext) :
 		val result = ArrayList<Manga>(array.length())
 		for (i in 0 until array.length()) {
 			val item = array.optJSONObject(i) ?: continue
-			val slug = item.optString("slug").takeIf { it.isNotBlank() } ?: continue
-			val title = item.optString("title").takeIf { it.isNotBlank() } ?: continue
+			val slug = item.getStringOrNull("slug") ?: continue
+			val title = item.getStringOrNull("title") ?: continue
 			result += Manga(
 				id = generateUid(slug),
 				title = title,
@@ -139,9 +139,9 @@ internal class KumoPoi(context: MangaLoaderContext) :
 			for (i in 0 until array.length()) {
 				val item = array.optJSONObject(i) ?: continue
 				if (item.optBoolean("isLocked", false)) continue
-				val chapterId = item.optString("id").takeIf { it.isNotBlank() } ?: continue
-				val number = item.optString("number").toFloatOrNull() ?: continue
-				val chapterTitle = item.optString("title").takeIf { it.isNotBlank() } ?: "Chapter $number"
+				val chapterId = item.getStringOrNull("id") ?: continue
+				val number = item.getStringOrNull("number")?.toFloatOrNull() ?: continue
+				val chapterTitle = item.getStringOrNull("title") ?: "Chapter ${number.formatSimple()}"
 				chapters += MangaChapter(
 					id = generateUid(chapterId),
 					title = chapterTitle,
@@ -157,8 +157,8 @@ internal class KumoPoi(context: MangaLoaderContext) :
 		}
 		chapters.sortBy { it.number }
 		return manga.copy(
-			title = data.optString("title").takeIf { it.isNotBlank() } ?: manga.title,
-			description = data.optString("description").takeIf { it.isNotBlank() } ?: "",
+			title = data.getStringOrNull("title") ?: manga.title,
+			description = data.getStringOrNull("description") ?: "",
 			coverUrl = coverUrl(data.getStringOrNull("cover")) ?: manga.coverUrl,
 			largeCoverUrl = null,
 			altTitles = data.optJSONArray("altTitles")?.toStringList() ?: manga.altTitles,
@@ -172,13 +172,16 @@ internal class KumoPoi(context: MangaLoaderContext) :
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val chapterId = chapter.url.substringAfterLast('/')
-		val data = webClient.httpGet("https://$domain/api/reader/$chapterId/pages", getRequestHeaders())
+		val readerHeaders = getRequestHeaders().newBuilder()
+			.set("Referer", "https://$domain${chapter.url}")
+			.build()
+		val data = webClient.httpGet("https://$domain/api/reader/$chapterId/pages", readerHeaders)
 			.parseJson().optJSONObject("data") ?: return emptyList()
 		val pages = data.optJSONArray("pages") ?: return emptyList()
 		val result = ArrayList<MangaPage>(pages.length())
 		for (i in 0 until pages.length()) {
 			val item = pages.optJSONObject(i) ?: continue
-			val token = item.optString("token").takeIf { it.isNotBlank() } ?: continue
+			val token = item.getStringOrNull("token") ?: continue
 			val url = "https://$apiHost/api/v1/media/chapter/deliver?token=$token"
 			result += MangaPage(
 				id = generateUid(url),
@@ -195,8 +198,8 @@ internal class KumoPoi(context: MangaLoaderContext) :
 		val result = LinkedHashSet<MangaTag>()
 		for (i in 0 until array.length()) {
 			val item = array.optJSONObject(i) ?: continue
-			val slug = item.optString("slug").takeIf { it.isNotBlank() } ?: continue
-			val name = item.optString("name").takeIf { it.isNotBlank() } ?: slug
+			val slug = item.getStringOrNull("slug") ?: continue
+			val name = item.getStringOrNull("name") ?: slug
 			result += MangaTag(title = name.toTitleCase(), key = slug, source = source)
 		}
 		return result
