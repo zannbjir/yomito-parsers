@@ -1,6 +1,9 @@
 package org.koitharu.kotatsu.parsers.site.mangareader.id
 
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Interceptor
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -9,6 +12,7 @@ import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.EnumSet
 import java.util.Locale
@@ -23,6 +27,9 @@ internal class KumoPoi(context: MangaLoaderContext) :
 	private val apiHost = "api.kumopoi.com"
 	private val cdnHost = "https://kumo.gorae.my.id"
 
+	@Volatile
+	private var readerReferer: String? = null
+
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.UPDATED,
 		SortOrder.POPULARITY,
@@ -32,7 +39,7 @@ internal class KumoPoi(context: MangaLoaderContext) :
 	override val filterCapabilities: MangaListFilterCapabilities
 		get() = MangaListFilterCapabilities(
 			isSearchSupported = true,
-			isMultipleTagsSupported = true,
+			isMultipleTagsSupported = false,
 		)
 
 	override fun getRequestHeaders(): Headers = super.getRequestHeaders().newBuilder()
@@ -40,6 +47,23 @@ internal class KumoPoi(context: MangaLoaderContext) :
 		.add("Origin", "https://$domain")
 		.add("Referer", "https://$domain/")
 		.build()
+
+	override fun intercept(chain: Interceptor.Chain): Response {
+		val request = chain.request()
+		if (request.url.encodedPath != "/api/reader/media") {
+			return chain.proceed(request)
+		}
+		val referer = readerReferer ?: "https://$domain/"
+		val newRequest = request.newBuilder()
+			.removeHeader("Origin")
+			.header("Accept", "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+			.header("Referer", referer)
+			.header("Sec-Fetch-Dest", "image")
+			.header("Sec-Fetch-Mode", "no-cors")
+			.header("Sec-Fetch-Site", "same-origin")
+			.build()
+		return chain.proceed(newRequest)
+	}
 
 	override suspend fun getFavicons(): Favicons {
 		val icon = runCatching {
@@ -171,18 +195,32 @@ internal class KumoPoi(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val chapterId = chapter.url.substringAfterLast('/')
-		val readerHeaders = getRequestHeaders().newBuilder()
-			.set("Referer", "https://$domain${chapter.url}")
-			.build()
-		val data = webClient.httpGet("https://$domain/api/reader/$chapterId/pages", readerHeaders)
+		val chapterId = chapter.url.substringBefore('?').trimEnd('/').substringAfterLast('/')
+		val headers = getRequestHeaders()
+		val challengeData = webClient.httpGet("https://$domain/api/reader/challenge", headers)
 			.parseJson().optJSONObject("data") ?: return emptyList()
+		val challenge = challengeData.getStringOrNull("challenge") ?: return emptyList()
+		val salt = challengeData.getStringOrNull("salt") ?: return emptyList()
+		val difficulty = challengeData.optInt("difficulty", 3).coerceIn(0, 6)
+		val payload = JSONObject()
+			.put("chapterId", chapterId)
+			.put("challenge", challenge)
+			.put("powNonce", solvePow(salt, difficulty))
+		readerReferer = "https://$domain${chapter.url}"
+		val data = webClient.httpPost(
+			"https://$domain/api/reader/manifest".toHttpUrl(),
+			payload,
+			headers,
+		).parseJson().optJSONObject("data") ?: return emptyList()
+		if (data.optBoolean("locked", false)) return emptyList()
 		val pages = data.optJSONArray("pages") ?: return emptyList()
-		val result = ArrayList<MangaPage>(pages.length())
-		for (i in 0 until pages.length()) {
-			val item = pages.optJSONObject(i) ?: continue
+		val items = (0 until pages.length())
+			.mapNotNull { pages.optJSONObject(it) }
+			.sortedBy { it.optInt("order", 0) }
+		val result = ArrayList<MangaPage>(items.size)
+		for (item in items) {
 			val token = item.getStringOrNull("token") ?: continue
-			val url = "https://$apiHost/api/v1/media/chapter/deliver?token=$token"
+			val url = "https://$domain/api/reader/media?token=${token.urlEncoded()}"
 			result += MangaPage(
 				id = generateUid(url),
 				url = url,
@@ -191,6 +229,33 @@ internal class KumoPoi(context: MangaLoaderContext) :
 			)
 		}
 		return result
+	}
+
+	private fun solvePow(salt: String, difficulty: Int): String {
+		if (difficulty <= 0) return "0"
+		val digest = MessageDigest.getInstance("SHA-256")
+		val bytes = (difficulty + 1) / 2 + 1
+		val hex = CharArray(bytes * 2)
+		for (n in 0 until MAX_POW_ATTEMPTS) {
+			val nonce = n.toString(36)
+			digest.update("$salt:$nonce".toByteArray(Charsets.UTF_8))
+			val hash = digest.digest()
+			var index = 0
+			for (i in 0 until bytes) {
+				val value = hash[i].toInt() and 0xFF
+				hex[index++] = HEX_ALPHABET[value ushr 4]
+				hex[index++] = HEX_ALPHABET[value and 0x0F]
+			}
+			var matched = true
+			for (i in 0 until difficulty) {
+				if (hex[i] != '0') {
+					matched = false
+					break
+				}
+			}
+			if (matched) return nonce
+		}
+		return "0"
 	}
 
 	private fun parseTags(array: JSONArray?): Set<MangaTag> {
@@ -238,4 +303,9 @@ internal class KumoPoi(context: MangaLoaderContext) :
 
 	private fun JSONObject.getStringOrNull(name: String): String? =
 		if (isNull(name)) null else optString(name).takeIf { it.isNotBlank() }
+
+	private companion object {
+		private const val MAX_POW_ATTEMPTS = 200_000
+		private val HEX_ALPHABET = "0123456789abcdef".toCharArray()
+	}
 }

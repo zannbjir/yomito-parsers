@@ -1,5 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.mangareader.id
 
+import okhttp3.Headers
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.model.ContentType
@@ -12,7 +13,7 @@ internal class DoujinDesuRip(context: MangaLoaderContext) :
 	MangaReaderParser(
 		context,
 		MangaParserSource.DOUJINDESURIP,
-		"doujindesu.ws",
+		"doujindesuid.cfd",
 		pageSize = 20,
 		searchPageSize = 10,
 	) {
@@ -21,4 +22,8 @@ internal class DoujinDesuRip(context: MangaLoaderContext) :
 		get() = super.filterCapabilities.copy(
 			isTagsExclusionSupported = false,
 		)
+
+	override fun getRequestHeaders(): Headers = super.getRequestHeaders().newBuilder()
+		.add("Referer", "https://$domain/")
+		.build()
 }
