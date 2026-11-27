@@ -24,6 +24,13 @@ internal class KumoPoi(context: MangaLoaderContext) :
 
 	override val configKeyDomain = ConfigKey.Domain("beta.kumopoi.com")
 
+	override val userAgentKey = ConfigKey.UserAgent(DESKTOP_USER_AGENT)
+
+	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
+		super.onCreateConfig(keys)
+		keys.add(userAgentKey)
+	}
+
 	private val apiHost = "api.kumopoi.com"
 	private val cdnHost = "https://kumo.gorae.my.id"
 
@@ -68,10 +75,16 @@ internal class KumoPoi(context: MangaLoaderContext) :
 		if (request.url.encodedPath != "/api/reader/media") {
 			return chain.proceed(request)
 		}
+		val referer = request.url.fragment
+			?.takeIf { it.startsWith("ref=") }
+			?.substring(4)
+			?: readerReferer
+			?: "https://$domain/"
 		val newRequest = request.newBuilder()
 			.removeHeader("Origin")
+			.header("User-Agent", DESKTOP_USER_AGENT)
 			.header("Accept", IMAGE_ACCEPT)
-			.header("Referer", readerReferer ?: "https://$domain/")
+			.header("Referer", referer)
 			.header("Sec-Fetch-Dest", "image")
 			.header("Sec-Fetch-Mode", "no-cors")
 			.header("Sec-Fetch-Site", "same-origin")
@@ -229,14 +242,15 @@ internal class KumoPoi(context: MangaLoaderContext) :
 		).parseJson().optJSONObject("data") ?: return emptyList()
 		if (data.optBoolean("locked", false)) return emptyList()
 		val pages = data.optJSONArray("pages") ?: return emptyList()
-		readerReferer = "https://$domain${chapter.url}"
+		val chapterUrl = chapter.url.toAbsoluteUrl(domain)
+		readerReferer = chapterUrl
 		val items = (0 until pages.length())
 			.mapNotNull { pages.optJSONObject(it) }
 			.sortedBy { it.optInt("order", 0) }
 		val result = ArrayList<MangaPage>(items.size)
 		for (item in items) {
 			val token = item.getStringOrNull("token") ?: continue
-			val url = "https://$domain/api/reader/media?token=${token.urlEncoded()}"
+			val url = "https://$domain/api/reader/media?token=${token.urlEncoded()}#ref=${chapterUrl.urlEncoded()}"
 			result += MangaPage(
 				id = generateUid(url),
 				url = url,
@@ -322,6 +336,8 @@ internal class KumoPoi(context: MangaLoaderContext) :
 
 	private companion object {
 		private const val MAX_POW_ATTEMPTS = 200_000
+		private const val DESKTOP_USER_AGENT =
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 		private const val API_ACCEPT = "application/json, text/plain, */*"
 		private const val IMAGE_ACCEPT = "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
 		private val HEX_ALPHABET = "0123456789abcdef".toCharArray()
