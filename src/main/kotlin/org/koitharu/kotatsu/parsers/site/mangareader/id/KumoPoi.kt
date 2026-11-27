@@ -1,5 +1,7 @@
+
 package org.koitharu.kotatsu.parsers.site.mangareader.id
 
+import okhttp3.Cookie
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
@@ -13,6 +15,7 @@ import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.EnumSet
 import java.util.Locale
@@ -36,6 +39,16 @@ internal class KumoPoi(context: MangaLoaderContext) :
 
 	@Volatile
 	private var readerReferer: String? = null
+
+	// KumoPoi's reader API (beta.kumopoi.com) rejects requests that do not look like
+	// a same-origin browser fetch: it requires Sec-Fetch-* headers and a Referer that
+	// points at the chapter page (root Referer => 403 "Forbidden"), and it serves
+	// honeypot/dummy page tokens unless the `aesir_dvc` device cookie is present.
+	// `aesir_dvc` is normally set client-side by the site's JS (fingerprint based);
+	// we synthesise a stable one and put it in the cookie jar so OkHttp sends it on
+	// every reader request. See ensureDeviceCookie() / readerApiHeaders().
+	@Volatile
+	private var deviceCookieReady = false
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.UPDATED,
@@ -65,6 +78,9 @@ internal class KumoPoi(context: MangaLoaderContext) :
 				.set("Sec-Fetch-Mode", "no-cors")
 				.set("Sec-Fetch-Site", "same-origin")
 				.set("Accept-Language", "id-ID,id;q=0.9,en;q=0.8")
+				.set("sec-ch-ua", SEC_CH_UA)
+				.set("sec-ch-ua-mobile", SEC_CH_UA_MOBILE)
+				.set("sec-ch-ua-platform", SEC_CH_UA_PLATFORM)
 				.removeAll("Origin")
 				.build()
 		}
@@ -75,9 +91,13 @@ internal class KumoPoi(context: MangaLoaderContext) :
 		if (request.url.encodedPath != "/api/reader/media") {
 			return chain.proceed(request)
 		}
+		ensureDeviceCookie()
+		// OkHttp percent-decodes the URL fragment, so `request.url.fragment` already
+		// contains the decoded chapter URL we stored as `#ref=...` in getPages().
 		val referer = request.url.fragment
 			?.takeIf { it.startsWith("ref=") }
 			?.substring(4)
+			?.takeIf { it.isNotBlank() }
 			?: readerReferer
 			?: "https://$domain/"
 		val newRequest = request.newBuilder()
@@ -89,6 +109,9 @@ internal class KumoPoi(context: MangaLoaderContext) :
 			.header("Sec-Fetch-Mode", "no-cors")
 			.header("Sec-Fetch-Site", "same-origin")
 			.header("Accept-Language", "id-ID,id;q=0.9,en;q=0.8")
+			.header("sec-ch-ua", SEC_CH_UA)
+			.header("sec-ch-ua-mobile", SEC_CH_UA_MOBILE)
+			.header("sec-ch-ua-platform", SEC_CH_UA_PLATFORM)
 			.build()
 		return chain.proceed(newRequest)
 	}
@@ -223,9 +246,14 @@ internal class KumoPoi(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+		ensureDeviceCookie()
 		readerReferer = null
 		val chapterId = chapter.url.substringBefore('?').trimEnd('/').substringAfterLast('/')
-		val headers = getRequestHeaders()
+		val chapterUrl = chapter.url.toAbsoluteUrl(domain)
+		readerReferer = chapterUrl
+		// Reader endpoints live on the main domain (beta.kumopoi.com) and gate on
+		// browser-like Sec-Fetch-* + sec-ch-ua headers and a chapter-page Referer.
+		val headers = readerApiHeaders(chapterUrl)
 		val challengeData = webClient.httpGet("https://$domain/api/reader/challenge", headers)
 			.parseJson().optJSONObject("data") ?: return emptyList()
 		val challenge = challengeData.getStringOrNull("challenge") ?: return emptyList()
@@ -238,12 +266,10 @@ internal class KumoPoi(context: MangaLoaderContext) :
 		val data = webClient.httpPost(
 			"https://$domain/api/reader/manifest".toHttpUrl(),
 			payload,
-			headers,
+			headers.newBuilder().set("Content-Type", "application/json").build(),
 		).parseJson().optJSONObject("data") ?: return emptyList()
 		if (data.optBoolean("locked", false)) return emptyList()
 		val pages = data.optJSONArray("pages") ?: return emptyList()
-		val chapterUrl = chapter.url.toAbsoluteUrl(domain)
-		readerReferer = chapterUrl
 		val items = (0 until pages.length())
 			.mapNotNull { pages.optJSONObject(it) }
 			.sortedBy { it.optInt("order", 0) }
@@ -259,6 +285,62 @@ internal class KumoPoi(context: MangaLoaderContext) :
 			)
 		}
 		return result
+	}
+
+	/**
+	 * Headers for the JSON reader API (challenge / manifest). Mirrors what the site's
+	 * own fetch() sends: same-origin Sec-Fetch-*, sec-ch-ua, and the chapter page as
+	 * Referer. Without these the server returns 403 {"success":false,"message":"Forbidden"}.
+	 */
+	private fun readerApiHeaders(referer: String): Headers =
+		super.getRequestHeaders().newBuilder()
+			.set("Accept", API_ACCEPT)
+			.set("Origin", "https://$domain")
+			.set("Referer", referer)
+			.set("Accept-Language", "id-ID,id;q=0.9,en;q=0.8")
+			.set("Sec-Fetch-Dest", "empty")
+			.set("Sec-Fetch-Mode", "cors")
+			.set("Sec-Fetch-Site", "same-origin")
+			.set("sec-ch-ua", SEC_CH_UA)
+			.set("sec-ch-ua-mobile", SEC_CH_UA_MOBILE)
+			.set("sec-ch-ua-platform", SEC_CH_UA_PLATFORM)
+			.build()
+
+	/**
+	 * Ensures a stable `aesir_dvc` device cookie exists in the cookie jar for this
+	 * source's domain. The site sets this client-side via JS (fingerprint); without it
+	 * the manifest returns honeypot/dummy page tokens whose media requests then 403.
+	 * OkHttp's BridgeInterceptor sends jar cookies on every request, so injecting it
+	 * here covers challenge, manifest and media.
+	 */
+	private fun ensureDeviceCookie() {
+		if (deviceCookieReady) return
+		val url = "https://$domain/".toHttpUrl()
+		val jar = context.cookieJar
+		val existing = runCatching { jar.loadForRequest(url) }.getOrDefault(emptyList())
+		if (existing.any { it.name == "aesir_dvc" && DEVICE_ID_REGEX.matches(it.value) }) {
+			deviceCookieReady = true
+			return
+		}
+		val id = "dvc_" + randomHex16()
+		val cookie = Cookie.Builder()
+			.domain(domain)
+			.path("/")
+			.name("aesir_dvc")
+			.value(id)
+			.expiresAt(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000)
+			.secure()
+			.build()
+		if (runCatching { jar.saveFromResponse(url, listOf(cookie)) }.isSuccess) {
+			deviceCookieReady = true
+		}
+	}
+
+	private fun randomHex16(): String {
+		val rnd = SecureRandom()
+		val sb = StringBuilder(16)
+		repeat(16) { sb.append(HEX_ALPHABET[rnd.nextInt(16)]) }
+		return sb.toString()
 	}
 
 	private fun solvePow(salt: String, difficulty: Int): String {
@@ -340,6 +422,11 @@ internal class KumoPoi(context: MangaLoaderContext) :
 			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 		private const val API_ACCEPT = "application/json, text/plain, */*"
 		private const val IMAGE_ACCEPT = "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+		// Matches the Chrome 158 / macOS profile used by DESKTOP_USER_AGENT.
+		private const val SEC_CH_UA = "\"Chromium\";v=\"158\", \"Not?A_Brand\";v=\"99\", \"Google Chrome\";v=\"158\""
+		private const val SEC_CH_UA_MOBILE = "?0"
+		private const val SEC_CH_UA_PLATFORM = "\"macOS\""
+		private val DEVICE_ID_REGEX = Regex("dvc_[0-9a-f]{16}")
 		private val HEX_ALPHABET = "0123456789abcdef".toCharArray()
 	}
 }
