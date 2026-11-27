@@ -4,6 +4,7 @@ import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.HttpStatusException
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -268,7 +269,7 @@ internal class CgBum(context: MangaLoaderContext) :
 				accessBody(sid, pageToken, grant),
 				headers,
 			).parseJson()
-		} catch (e: ParseException) {
+		} catch (e: HttpStatusException) {
 			if (grant == null) throw e
 			grant = null
 			accessGrant = null
@@ -318,7 +319,7 @@ internal class CgBum(context: MangaLoaderContext) :
 	}
 
 	private fun decodeResources(value: String, signature: String): List<String> {
-		if (signature.length != 64) throw ParseException("Invalid reader signature")
+		if (signature.length != 64) error("Invalid reader signature")
 		val key = ByteArray(32) { i -> signature.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
 		var encoded = value.substring(2).replace('-', '+').replace('_', '/')
 		while (encoded.length % 4 != 0) {
@@ -330,25 +331,28 @@ internal class CgBum(context: MangaLoaderContext) :
 		}
 		val packed = JSONArray(String(bytes, Charsets.UTF_8))
 		if (packed.length() != 3 || packed.getJSONArray(1).length() == 0) {
-			throw ParseException("Invalid reader resource payload")
+			error("Invalid reader resource payload")
 		}
 		val urls = packed.getJSONArray(0)
 		val entries = packed.getJSONArray(1)
 		if (packed.getString(2) != signature) {
-			throw ParseException("Reader resource signature mismatch")
+			error("Reader resource signature mismatch")
 		}
-		return entries.mapJSON { entry ->
+		val result = ArrayList<String>(entries.length())
+		for (i in 0 until entries.length()) {
+			val entry = entries.optJSONArray(i) ?: continue
 			val index = entry.optInt(0, -1)
 			if (index !in 0 until urls.length()) {
-				throw ParseException("Invalid reader resource index")
+				error("Invalid reader resource index")
 			}
-			urls.getString(index) + entry.optString(1)
+			result += urls.getString(index) + entry.optString(1)
 		}
+		return result
 	}
 
 	private fun applyLayout(urls: List<String>, layout: String): List<String> {
 		if (!LAYOUT_REGEX.matches(layout)) {
-			throw ParseException("Invalid reader layout")
+			error("Invalid reader layout")
 		}
 		val seed = layout.substring(2).toLong(16).toInt()
 		var count = 0
@@ -377,10 +381,10 @@ internal class CgBum(context: MangaLoaderContext) :
 			val lo = 1 + (i * span) / gapsCount
 			val hi = ((i + 1) * span) / gapsCount
 			val index = if (count == 1) {
-				1
+				1 + i
 			} else {
-				lo + (step() % (hi - lo + 1)).toInt()
-			} + i
+				lo + (step() % (hi - lo + 1)).toInt() + i
+			}
 			gaps += index
 		}
 		return urls.filterIndexed { index, _ -> index !in gaps }
@@ -414,7 +418,7 @@ internal class CgBum(context: MangaLoaderContext) :
 				return n.toString()
 			}
 		}
-		throw ParseException("Unable to solve reader proof of work")
+		error("Unable to solve reader proof of work")
 	}
 
 	private fun newSid(): String {
